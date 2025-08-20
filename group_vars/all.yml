@@ -9,7 +9,7 @@ satellite_server_url: "https://{{ satellite_fqdn }}"  # Used in module_defaults
 satellite_loadbalanced: false  # Set to true if behind a load balancer
 satellite_loadbalancer_fqdn: ""  # Load balancer FQDN if applicable
 satellite_setup_username: "admin"  # Default admin user
-satellite_initial_admin_password: "{{ satellite_admin_password }}"
+satellite_initial_admin_password: "vault"
 server_proxy_hostname: proxy-zsgov.external.lmco.com
 uuid: "e4b7f5a0-8c3d-11e9-bc42-526af7764f64"  # EO_ITRA UUID from the portal
 satellite_shortname:
@@ -22,7 +22,7 @@ capsule_fqdns:
   - capsule2.example.com
 
 # API Credentials - Injected from AAP
-satellite_api_username: "{{ server_specific_username }}"      # This will have to be setup AFTER the install of Satellite(user)
+satellite_api_username: "{{ server_specific_username }}"  # This will have to be setup AFTER the install of Satellite(user)
 satellite_api_password: "{{ Satellite_API_token_us }}"  # From AAP credential setup AFTER the install of Satellite(token)
 
 # Organization and Location
