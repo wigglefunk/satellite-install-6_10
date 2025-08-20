@@ -1,0 +1,301 @@
+---
+# Red Hat Satellite 6.17 installation tasks
+# Registers with CDN, enables repos, and runs satellite-installer
+# Note on CDN Registration:
+# The CDN credentials (redhat_cdn_username, redhat_cdn_password) or activation key (redhat_activation_key, redhat_org_id) should be added to AAP credentials 
+# if needed. These aren't in the current variables file since they're sensitive.
+
+- name: Set satellite shortname and FQDN
+  set_fact:
+    satellite_shortname: "{{ ansible_hostname }}"
+    satellite_fqdn: "{{ ansible_fqdn }}"
+    satellite_custom_cert_path: "/root/sat_cert/{{ satellite_shortname }}"
+
+- name: Create cert directory on Satellite host
+  file:
+    path: "{{ satellite_custom_cert_path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0700'
+
+- name: Copy ZIP file from GitLab repo
+  copy:
+    src: "files/{{ satellite_shortname }}/{{ satellite_fqdn }}.zip"
+    dest: "{{ satellite_custom_cert_path }}/"
+    mode: "0600"
+  delegate_to: localhost
+  register: zip_copy
+
+- name: Unzip cert files on Satellite host
+  command: >
+    unzip {{ satellite_fqdn }}.zip "{{ satellite_fqdn }}*"
+  args:
+    chdir: "{{ satellite_custom_cert_path }}"
+  register: unzip_result
+  changed_when: "'inflating:' in unzip_result.stdout"
+
+- name: Rename key file to .key.old
+  command: >
+    mv {{ satellite_fqdn }}.key {{ satellite_fqdn }}.key.old
+  args:
+    chdir: "{{ satellite_custom_cert_path }}"
+  when: 
+    - unzip_result is changed
+    - ansible_facts['distribution'] is defined  # sanity check
+
+- name: Rewrite key with openssl
+  command: >
+    openssl rsa -in {{ satellite_fqdn }}.key.old -out {{ satellite_fqdn }}.key
+  args:
+    chdir: "{{ satellite_custom_cert_path }}"
+  register: key_rewrite
+  changed_when: key_rewrite.rc == 0
+
+- name: Debug summary of cert prep
+  debug:
+    msg:
+      - "Satellite shortname: {{ satellite_shortname }}"
+      - "Satellite FQDN: {{ satellite_fqdn }}"
+      - "Cert ZIP copied: {{ zip_copy.dest }}"
+      - "Certs extracted to: {{ satellite_custom_cert_path }}"
+      - "Key rewritten: {{ key_rewrite is changed }}"
+
+# CDN Registration
+- name: Register system with Red Hat CDN
+  community.general.redhat_subscription:
+    state: present
+    username: "{{ redhat_cdn_username }}"
+    password: "{{ redhat_cdn_password }}"
+    uuid: "{{ redhat_cdn_uuid }}"                  # we will use EO_ITRA uuid from the portal
+    server_proxy_hostname: "{{ server_proxy_hostname }}"  # this should be the z-scaler..if we are still using it
+    server_proxy_port: '80'
+    auto_attach: true
+  register: cdn_registration
+
+- name: Report CDN registration status
+  debug:
+    msg: "System registered to Red Hat CDN"
+  when: cdn_registration is changed
+
+# Disable all repositories first
+- name: Disable all repositories
+  ansible.builtin.command: subscription-manager repos --disable "*"
+  changed_when: true
+
+# Enable required repositories
+- name: Enable Satellite repositories
+  community.general.rhsm_repository:
+    name: "{{ satellite_repos_to_enable }}"
+    state: enabled
+  register: repos_enabled
+
+- name: Verify enabled repositories
+  ansible.builtin.command: dnf repolist enabled
+  register: repolist
+  changed_when: false
+
+- name: Display enabled repositories
+  debug:
+    msg: "Enabled repositories: {{ repolist.stdout_lines | select('match', '.*satellite.*') | list }}"
+
+# Clean DNF cache
+- name: Clean DNF cache
+  ansible.builtin.command: dnf clean all
+  changed_when: true
+
+# Install Satellite packages
+- name: Install Satellite 6.17 packages
+  ansible.builtin.dnf:
+    name: satellite
+    state: present
+  register: satellite_install
+  retries: 2
+  delay: 10
+
+- name: Report Satellite package installation
+  debug:
+    msg: "Satellite packages installed successfully"
+  when: satellite_install is changed
+
+# Check if Satellite is already installed
+- name: Check if Satellite is already configured
+  ansible.builtin.stat:
+    path: /etc/foreman-installer/scenarios.d/satellite-answers.yaml
+  register: satellite_configured
+
+- name: Check Satellite service status to make certain
+  ansible.builtin.systemd:
+    name: foreman
+  register: foreman_service
+  failed_when: false
+  changed_when: false
+
+# Run satellite-installer
+- name: Run satellite-installer
+  ansible.builtin.command: |
+    satellite-installer \
+      --scenario {{ satellite_installer_scenario }} \
+      --foreman-initial-admin-username {{ satellite_setup_username }} \
+      --foreman-initial-admin-password {{ satellite_initial_admin_password }} \
+      --foreman-initial-organization {{ satellite_org }} \
+      --foreman-initial-location {{ satellite_location }} \
+      --enable-foreman-plugin-ansible \
+      --enable-foreman-plugin-remote-execution \
+      --enable-foreman-proxy-plugin-ansible \
+      --enable-foreman-proxy-plugin-remote-execution-script
+  register: installer_result
+  when: 
+    - not satellite_configured.stat.exists or
+      (foreman_service.status.ActiveState | default('inactive') != 'active')
+  async: 3600  # 1 hour timeout
+  poll: 30  # Check every 30 seconds
+
+- name: Report installer completion
+  debug:
+    msg: "Satellite installer completed successfully"
+  when: installer_result is changed
+
+- name: Display installer summary
+  debug:
+    msg: "{{ installer_result.stdout_lines | default([]) | select('match', '.*Success.*|.*Complete.*') | list }}"
+  when: installer_result.stdout_lines is defined
+
+# Verify installation
+- name: Wait for Satellite services to start
+  ansible.builtin.wait_for:
+    port: 443
+    host: "{{ satellite_fqdn }}"
+    delay: 30
+    timeout: 300
+    state: started
+  when: installer_result is changed
+
+- name: Check Satellite health
+  ansible.builtin.uri:
+    url: "{{ satellite_server_url }}/api/status"
+    method: GET
+    user: "{{ satellite_setup_username }}"
+    password: "{{ satellite_initial_admin_password }}"
+    force_basic_auth: true
+    validate_certs: false
+    status_code: 200
+  register: health_check
+  retries: 3
+  delay: 20
+  until: health_check.status == 200
+
+- name: Display Satellite version
+  debug:
+    msg: "Satellite version: {{ health_check.json.version | default('Unknown') }}"
+  when: health_check.json is defined
+
+# Configure hammer CLI
+# - name: Create hammer config directory
+#   ansible.builtin.file:
+#     path: /root/.hammer
+#     state: directory
+#     mode: '0700'
+
+# - name: Configure hammer CLI
+#   ansible.builtin.template:
+#     content: |
+#       :foreman:
+#         :host: 'https://{{ satellite_fqdn }}'
+#         :username: '{{ satellite_api_username }}'
+#         :password: '{{ satellite_initial_admin_password }}'
+#         :verify_ssl: false
+#     dest: /root/.hammer/cli_config.yml
+#     mode: '0600'
+
+- name: Test hammer CLI
+  ansible.builtin.command: hammer ping
+  register: hammer_test
+  changed_when: false
+  failed_when: false
+
+- name: Display hammer status
+  debug:
+    msg: "Hammer CLI configured and working"
+  when: hammer_test.rc == 0
+
+- name: Stat cert directory
+  stat:
+    path: "{{ satellite_custom_cert_path }}"
+  register: custom_certs
+
+- name: Run katello-certs-check to validate cert bundle
+  shell: >
+    katello-certs-check
+    -c {{ satellite_custom_cert_path }}/{{ satellite_fqdn }}.crt
+    -k {{ satellite_custom_cert_path }}/{{ satellite_fqdn }}.key
+    -b {{ satellite_custom_cert_path }}/{{ satellite_fqdn }}-chain.pem
+  args:
+    chdir: "{{ satellite_custom_cert_path }}"
+  register: cert_check
+  changed_when: false
+  failed_when: false  # We’ll handle failure manually
+
+- name: Fail if cert validation did not succeed
+  fail:
+    msg: >-
+      Certificate validation failed for {{ satellite_fqdn }}.
+      Expected phrase 'Validation succeeded' not found in output.
+      Full output:
+      {{ cert_check.stdout_lines | default(['No output captured']) }}
+  when: cert_check.stdout is not search('Validation succeeded')
+
+- name: Debug summary of cert validation
+  debug:
+    msg:
+      - "Cert validation passed for {{ satellite_fqdn }}"
+      - "Validation output:"
+      - "{{ cert_check.stdout_lines }}"
+
+- name: Run Satellite installer again to use custom certificates
+  ansible.builtin.command: >
+    satellite-installer
+    --certs-server-cert {{ satellite_custom_cert_path }}/{{ satellite_fqdn }}.crt
+    --certs-server-key {{ satellite_custom_cert_path }}/{{ satellite_fqdn }}.key
+    --certs-server-ca-cert {{ satellite_custom_cert_path }}/{{ satellite_fqdn }}-chain.pem
+    --certs-update-server
+    --certs-update-server-ca
+  when:
+    - satellite_loadbalanced | bool
+    - custom_certs.stat.exists | default(false)
+    - custom_certs.stat.isdir | default(false)
+  register: cert_update
+
+
+
+# Installation summary
+- name: Satellite installation summary
+  debug:
+    msg:
+      - "Installation Status: Complete"
+      - "Satellite URL: {{ satellite_server_url }}"
+      - "Admin Username: {{ satellite_api_username }}"
+      - "API Status: {{ health_check.json.status | default('Unknown') }}"
+      - "Version: {{ health_check.json.version | default('Unknown') }}"
+      - "Hammer CLI: Configured"
+      - "Custom Certificates: {{ 'Configured' if cert_update is changed else 'Not configured' }}"
+
+- name: Save installation details
+  ansible.builtin.copy:
+    content: |
+      Satellite Installation Details
+      ==============================
+      Date: {{ ansible_date_time.iso8601 }}
+      FQDN: {{ satellite_fqdn }}
+      URL: {{ satellite_server_url }}
+      Version: {{ health_check.json.version | default('6.17') }}
+      Organization: {{ satellite_org }}
+      Location: {{ satellite_location }}
+      Admin User: {{ satellite_api_username }}
+      
+      Next Steps:
+      1. Access Satellite at {{ satellite_server_url }}
+      2. Run post-configuration playbook
+      3. Configure additional settings as needed
+    dest: /root/satellite-installation-summary.txt
+    mode: '0600'

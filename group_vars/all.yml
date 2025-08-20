@@ -1,0 +1,189 @@
+---
+# Red Hat Satellite 6.17 Installation Variables
+# Variables injected by AAP are marked with "From AAP credential"
+
+# Satellite Server Configuration
+sat_version: "6.17"
+satellite_fqdn: "satellitetestserver.com"
+satellite_server_url: "https://{{ satellite_fqdn }}"  # Used in module_defaults
+satellite_loadbalanced: false  # Set to true if behind a load balancer
+satellite_loadbalancer_fqdn: ""  # Load balancer FQDN if applicable
+satellite_setup_username: "admin"  # Default admin user
+satellite_initial_admin_password: "{{ satellite_admin_password }}"
+server_proxy_hostname: proxy-zsgov.external.lmco.com
+uuid: "e4b7f5a0-8c3d-11e9-bc42-526af7764f64"  # EO_ITRA UUID from the portal
+satellite_shortname:
+  - testserver
+  - testserver2
+
+# Hosts treated as Capsules (exact FQDNs).
+capsule_fqdns:
+  - capsule1.example.com
+  - capsule2.example.com
+
+# API Credentials - Injected from AAP
+satellite_api_username: "{{ server_specific_username }}"      # This will have to be setup AFTER the install of Satellite(user)
+satellite_api_password: "{{ Satellite_API_token_us }}"  # From AAP credential setup AFTER the install of Satellite(token)
+
+# Organization and Location
+satellite_org: "EO_ITRA"  # Organization name for installation
+satellite_location: "default_location"  # Location for installation
+
+# Installation Configuration
+satellite_installer_scenario: "satellite"  # Installer scenario
+satellite_custom_cert_path: "/root/sat_cert/{{ satellite_shortname }}"  # Path for custom certificates
+
+# DNS Configuration
+validate_dns: true  # Perform DNS validation before installation
+dns_timeout: 5  # DNS lookup timeout in seconds
+
+# Storage Configuration - Using GB values - THIS var currently adds up to 9,728 GB
+satellite_storage_config:
+  vg_name: "vgsat"
+  # data_disk is auto-detected; leave unset or placeholder
+  volumes:
+    - name: "lvlibfmaintain"
+      size: "16g"  
+      mount: "/var/lib/foreman-maintain"
+      fstype: "xfs"
+    - name: "lvsquid"
+      size: "14g"  
+      mount: "/var/spool/squid"
+      fstype: "xfs"
+    - name: "lvlogfmaintain"
+      size: "24g"  
+      mount: "/var/log/foreman-maintain"
+      fstype: "xfs"
+    - name: "lvcpulp"
+      size: "27g"
+      mount: "/var/cache/pulp"
+      fstype: "xfs"
+    - name: "lvbackup"
+      size: "512g"
+      mount: "/backup"
+      fstype: "xfs"
+    - name: "lvlpulp"
+      size: "8192g"
+      mount: "/var/lib/pulp"
+      fstype: "xfs"
+    - name: "lvqpidd"
+      size: "7g"
+      mount: "/var/lib/qpidd"
+      fstype: "xfs"
+    - name: "lvpgsql"
+      size: "200g"
+      mount: "/var/lib/pgsql"
+      fstype: "xfs"
+    - name: "lvlibftasks"
+      size: "14g"
+      mount: "/var/lib/foreman/tasks-backup"
+      fstype: "xfs"
+    - name: "lvhttpdLog"
+      size: "14g"
+      mount: "/var/log/httpd"
+      fstype: "xfs"
+    - name: "lvpulpexports"
+      size: "500g"
+      mount: "/var/lib/pulp/exports"
+      fstype: "xfs"
+    - name: "lvcandlepinLog"
+      size: "7g"
+      mount: "/var/log/candlepin"
+      fstype: "xfs"
+    - name: "lvforemanLog"
+      size: "7g"
+      mount: "/var/log/foreman"
+      fstype: "xfs"
+
+# Storage Configuration - Capsule (smaller /var/lib/pulp typical)
+capsule_storage_config:
+  vg_name: "vgsat"
+  # data_disk is auto-detected; leave unset or placeholder
+  volumes:
+    - name: "lvlibfmaintain"
+      size: "16g"  
+      mount: "/var/lib/foreman-maintain"
+      fstype: "xfs"
+    - name: "lvsquid"
+      size: "14g"  
+      mount: "/var/spool/squid"
+      fstype: "xfs"
+    - name: "lvlogfmaintain"
+      size: "24g"  
+      mount: "/var/log/foreman-maintain"
+      fstype: "xfs"
+    - name: "lvcpulp"
+      size: "27g"
+      mount: "/var/cache/pulp"
+      fstype: "xfs"
+    - name: "lvbackup"
+      size: "512g"
+      mount: "/backup"
+      fstype: "xfs"
+    - name: "lvlpulp"
+      size: "8192g"
+      mount: "/var/lib/pulp"
+      fstype: "xfs"
+    - name: "lvqpidd"
+      size: "7g"
+      mount: "/var/lib/qpidd"
+      fstype: "xfs"
+    - name: "lvpgsql"
+      size: "200g"
+      mount: "/var/lib/pgsql"
+      fstype: "xfs"
+    - name: "lvhttpdLog"
+      size: "14g"
+      mount: "/var/log/httpd"
+      fstype: "xfs"
+    - name: "lvcandlepinLog"
+      size: "7g"
+      mount: "/var/log/candlepin"
+      fstype: "xfs"
+    - name: "lvforemanLog"
+      size: "7g"
+      mount: "/var/log/foreman"
+      fstype: "xfs"
+
+# Package Requirements
+satellite_required_packages:
+  - ansible-core
+  - chrony
+  - sos
+  - tmux
+  - bash-completion
+  - tree
+  - yum-utils
+  - dnf-utils
+  - git
+  - lvm2
+
+# Repository Configuration for CDN
+satellite_repos_to_enable:
+  - "rhel-{{ rhel_major_version }}-for-x86_64-baseos-rpms"
+  - "rhel-{{ rhel_major_version }}-for-x86_64-appstream-rpms"
+  - "satellite-{{ sat_version }}-for-rhel-{{ rhel_major_version }}-x86_64-rpms"
+  - "satellite-maintenance-{{ sat_version }}-for-rhel-{{ rhel_major_version }}-x86_64-rpms"
+
+# System Configuration
+selinux_mode: "permissive"  # SELinux mode during installation
+firewall_enabled: false  # Disable firewall for simplicity
+
+# Reboot Configuration
+check_reboot_required: true  # Check if reboot is needed after updates
+auto_reboot: false  # Automatically reboot if required
+reboot_timeout: 600  # Reboot timeout in seconds
+
+# Standardized certificate path - also used for capsule installations
+# NOTE: Future capsule installation playbooks should create this directory
+# in their host prep role for consistency
+# capsule_cert_input_dir: "/tmp/capsule-certificates"
+# capsule_cert_output_dir: "/var/lib/satellite/capsule-certificates"
+
+# Venafi Configuration (Optional) - From AAP credentials
+# venafi_username: "{{ vault_venafi_username | default('') }}"
+# venafi_password: "{{ vault_venafi_password | default('') }}"
+# venafi_client_id: "{{ vault_venafi_client_id | default('') }}"
+# venafi_api_url: "https://venafi.company.com"
+# venafi_template_name: "LM US Web Server_Venafi"
+

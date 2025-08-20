@@ -1,0 +1,10 @@
+---
+- name: fcmcontrol-user-creation
+  scm: git
+  src: https://gitlab.global.lmco.com/force/compute-iaas/content-management/public/ansible_roles/ansible-role-fcmcontrol-user-creation.git
+  version: main
+
+- name: postgres-user-override
+  scm: git
+  src: https://gitlab.global.lmco.com/force/compute-iaas/content-management/public/ansible_roles/ansible-role-postgres-user-override.git
+  version: main

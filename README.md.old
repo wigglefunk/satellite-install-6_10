@@ -1,0 +1,174 @@
+# Red Hat Satellite 6.17 Installation Automation
+
+Ansible automation for installing Red Hat Satellite 6.17 on RHEL 9 using Ansible Automation Platform (AAP).
+
+## Overview
+
+This project automates the complete installation of Red Hat Satellite 6.17, including:
+- System preparation (storage, packages, services)
+- Satellite software installation
+- Optional capsule certificate generation via Venafi
+
+## Requirements
+
+### Target System
+- RHEL 9.x installed
+- Minimum 20GB RAM
+- Sufficient disk space (see storage configuration)
+- Valid Red Hat subscription
+- Network connectivity to Red Hat CDN
+
+### Ansible Collections Required
+- `redhat.rhel_system_roles` >= 1.20.0
+- `redhat.satellite_operations` >= 2.0.0
+- `redhat.satellite` >= 3.0.0
+- `ansible.posix` >= 1.5.0
+- `community.general` >= 6.0.0
+- `venafi.machine_identity` >= 0.9.0 (optional)
+
+### AAP Configuration
+- Inventory with target Satellite server
+- Machine credentials for SSH access
+- Custom credentials for:
+  - `Satellite_API_token_us` - Initial admin password
+  - `satellite_admin_password` - Admin password for API access
+  
+
+
+
+## Configuration
+
+### Key Variables
+
+Edit `group_vars/all.yml` to configure:
+
+- **Server Details**
+  - `satellite_fqdn`: FQDN of your Satellite server
+  - `satellite_org`: Organization name
+  - `satellite_location`: Location name
+
+- **Storage Configuration**
+  - `satellite_storage_config.data_disk`: Disk device for LVM
+  - `satellite_storage_config.volumes`: LVM volume configuration
+
+- **Optional Features**
+  - `generate_capsule_certs`: Enable capsule certificate generation
+  - `capsule_fqdn_list`: List of capsule servers
+
+### Storage Layout
+
+Default storage configuration creates the following LVM volumes **Example** Check the Storage Configuration - Using GB values section of the group_vars:
+
+| Volume | Size | Mount Point | Purpose |
+|--------|------|-------------|---------|
+| pulp | 13TB | /var/lib/pulp | Content storage |
+| pgsql | 800GB | /var/lib/pgsql | PostgreSQL database |
+| httpd | 8GB | /var/lib/httpd | Web server files |
+| pulp_exports | 1.5TB | /var/lib/pulp/exports | Content exports |
+| foreman_tasks | 32GB | /var/lib/foreman/tasks-backup | Task backups |
+
+## Usage in AAP
+
+### 1. Create Project
+- Source Control Type: Git
+- Source Control URL: Your GitLab repository
+- Update on Launch: Yes
+
+### 2. Create Job Template
+- Name: "Install Satellite 6.17"
+- Job Type: Run
+- Inventory: Select inventory with Satellite server
+- Project: Select the created project
+- Playbook: `playbooks/satellite-install.yml`
+- Credentials:
+  - Machine credential for SSH
+  - Custom credential with Satellite passwords
+  - Venafi credential (if applicable)
+
+### 3. Add Survey (Optional)
+Add survey questions for runtime configuration:
+- `satellite_fqdn` - Text
+- `satellite_org` - Text
+- `generate_capsule_certs` - Boolean
+
+### 4. Launch Template
+Execute the job template to begin installation.
+
+## Playbook Execution Flow
+
+1. **DNS Validation** - Verifies FQDN resolution
+2. **Host Preparation**
+   - Configure LVM storage
+   - Install required packages
+   - Configure SELinux and services
+   - Update system packages
+3. **Satellite Installation**
+   - Register to Red Hat CDN
+   - Enable required repositories
+   - Install Satellite packages
+   - Run satellite-installer
+4. **Certificate Generation** (Optional)
+   - Generate certificates via Venafi
+   - Copy to Satellite server
+
+## Post-Installation
+
+After successful installation:
+1. Access Satellite at `https://<satellite_fqdn>`
+2. Login with username `admin` and configured password
+3. Run the post-configuration playbook (separate project)
+4. If capsule certificates were generated, they are stored in `/var/lib/satellite/capsule-certificates`
+
+### Capsule Certificate Handling
+
+If `generate_capsule_certs` was enabled:
+- Certificates and installation scripts are in `/var/lib/satellite/capsule-certificates`
+- Each capsule has two files:
+  - `<capsule_fqdn>-certs.tar` - Certificate bundle
+  - `<capsule_fqdn>-install-command.sh` - Installation script
+- Copy both files to the capsule server's `/var/lib/satellite/capsule-certificates` directory
+- **NOTE**: Future capsule installation playbooks should create this standardized directory in their host prep role
+
+## Troubleshooting
+
+### Common Issues
+
+**DNS Resolution Failure**
+- Ensure FQDN is properly configured in DNS
+- Check `/etc/hosts` file
+- Set `validate_dns: false` to skip validation
+
+**Storage Configuration Failure**
+- Verify disk device exists (`lsblk`)
+- Ensure sufficient disk space
+- Check no existing VG with same name
+
+**Repository Access Issues**
+- Verify Red Hat subscription is valid
+- Check network connectivity to CDN
+- Ensure proxy settings if required
+
+### Debug Mode
+
+Run with increased verbosity in AAP:
+- Set Verbosity to 3 (Debug) in job template
+
+### Logs
+
+Check installation logs:
+```bash
+/var/log/foreman-installer/satellite.log
+/var/log/messages
+```
+
+## Security Considerations
+
+- Passwords are managed through AAP credentials
+- No sensitive data stored in repository
+- SELinux set to permissive during installation
+- Firewall disabled by default (configure post-installation)
+
+
+## Version History
+
+- 1.0.0 - Initial release for Satellite 6.17

@@ -1,0 +1,87 @@
+---
+- name: Run Capsule cert prep on Satellite hosts only
+  when: inventory_hostname in satellite_fqdns
+  block:
+
+    - name: Loop through Capsule FQDNs
+      vars:
+        capsule_list: "{{ capsule_fqdns }}"
+      loop: "{{ capsule_list }}"
+      loop_control:
+        loop_var: capsule_fqdn
+      block:
+
+        - name: Derive capsule shortname and cert path
+          set_fact:
+            capsule_shortname: "{{ capsule_fqdn.split('.')[0] }}"
+            capsule_custom_cert_path: "/root/capsule_cert/{{ capsule_shortname }}"
+
+        - name: Ensure cert directory exists
+          file:
+            path: "{{ capsule_custom_cert_path }}"
+            state: directory
+            owner: root
+            group: root
+            mode: '0700'
+
+        - name: Copy cert ZIP file from GitLab repo
+          copy:
+            src: "files/{{ capsule_shortname }}/{{ capsule_fqdn }}.zip"
+            dest: "{{ capsule_custom_cert_path }}/"
+            mode: "0600"
+          delegate_to: localhost
+          register: zip_copy
+
+        - name: Unzip cert files on Satellite host
+          command: >
+            unzip {{ capsule_fqdn }}.zip "{{ capsule_fqdn }}*"
+          args:
+            chdir: "{{ capsule_custom_cert_path }}"
+          register: unzip_result
+          changed_when: "'inflating:' in unzip_result.stdout"
+
+        - name: Rename key file to .key.old
+          command: >
+            mv {{ capsule_fqdn }}.key {{ capsule_fqdn }}.key.old
+          args:
+            chdir: "{{ capsule_custom_cert_path }}"
+          when: unzip_result is changed
+
+        - name: Rewrite key with openssl
+          command: >
+            openssl rsa -in {{ capsule_fqdn }}.key.old -out {{ capsule_fqdn }}.key
+          args:
+            chdir: "{{ capsule_custom_cert_path }}"
+          register: key_rewrite
+          changed_when: key_rewrite.rc == 0
+
+        - name: Validate certs with katello-certs-check
+          shell: >
+            katello-certs-check
+            -c {{ capsule_custom_cert_path }}/{{ capsule_fqdn }}.crt
+            -k {{ capsule_custom_cert_path }}/{{ capsule_fqdn }}.key
+            -b {{ capsule_custom_cert_path }}/{{ capsule_fqdn }}-chain.pem
+          args:
+            chdir: "{{ capsule_custom_cert_path }}"
+          register: cert_check
+          changed_when: false
+          failed_when: false
+
+        - name: Fail if cert validation did not succeed
+          fail:
+            msg: >-
+              Certificate validation failed for {{ capsule_fqdn }}.
+              Expected phrase 'Validation succeeded' not found in output.
+              Full output:
+              {{ cert_check.stdout_lines | default(['No output captured']) }}
+          when: cert_check.stdout is not search('Validation succeeded')
+
+        - name: Debug summary of Capsule cert prep
+          debug:
+            msg:
+              - "Capsule FQDN: {{ capsule_fqdn }}"
+              - "Capsule shortname: {{ capsule_shortname }}"
+              - "Cert ZIP copied: {{ zip_copy.dest }}"
+              - "Certs extracted to: {{ capsule_custom_cert_path }}"
+              - "Key rewritten: {{ key_rewrite is changed }}"
+              - "Cert validation passed: {{ 'Validation succeeded' in cert_check.stdout }}"

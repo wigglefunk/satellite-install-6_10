@@ -1,0 +1,211 @@
+---
+# Swap migration + detect correct data disk and storage config
+
+- name: Gather facts
+  setup:
+    gather_subset:
+      - hardware
+      - devices
+
+# - name: Compute desired swap size (MiB)
+#   set_fact:
+#     desired_swap_mb: "{{ (ansible_memtotal_mb * 1.0) | round(0, 'floor') | int }}"  # 1× RAM
+
+# # ------------------------
+# # MIGRATE SWAP FILE → UUID SWAP ON SAME DISK/VG
+# # ------------------------
+# - name: Detect active swap entries
+#   command: swapon --show=NAME,TYPE --noheadings
+#   register: swapon_show
+#   changed_when: false
+#   failed_when: false
+
+# - name: Parse active swap entries
+#   set_fact:
+#     active_swaps: >-
+#       {{ swapon_show.stdout_lines
+#          | map('regex_replace', '\s+', ' ')
+#          | map('split', ' ')
+#          | list }}
+#   when: swapon_show.stdout | length > 0
+
+# - name: Detect swap file path
+#   set_fact:
+#     swap_file_path: "{{ (active_swaps | selectattr('1','equalto','file') | first)[0] }}"
+#   when: active_swaps | selectattr('1','equalto','file') | list | length > 0
+
+# - name: Get device for swap file mount
+#   command: "df --output=source {{ swap_file_path }} | tail -1"
+#   register: swap_file_dev
+#   changed_when: false
+#   when: swap_file_path is defined
+
+# - name: Identify type of swap file device
+#   command: "lsblk -no TYPE {{ swap_file_dev.stdout }}"
+#   register: swap_file_dev_type
+#   changed_when: false
+#   when: swap_file_path is defined
+
+# - name: If LVM, get target VG
+#   command: "lvs --noheadings -o vg_name {{ swap_file_dev.stdout }}"
+#   register: target_vg
+#   changed_when: false
+#   when:
+#     - swap_file_path is defined
+#     - swap_file_dev_type.stdout == "lvm"
+
+# - name: If partition, get target disk
+#   set_fact:
+#     target_disk: "{{ swap_file_dev.stdout | regex_replace('[0-9]+$', '') | regex_replace('p[0-9]+$','') }}"
+#   when:
+#     - swap_file_path is defined
+#     - swap_file_dev_type.stdout != "lvm"
+
+# - name: Disable active swap file
+#   command: "swapoff {{ swap_file_path }}"
+#   failed_when: false
+#   when: swap_file_path is defined
+
+# - name: Remove swap file
+#   file:
+#     path: "{{ swap_file_path }}"
+#     state: absent
+#   when: swap_file_path is defined
+
+# - name: Remove swap file entries from fstab
+#   lineinfile:
+#     path: /etc/fstab
+#     state: absent
+#     regexp: '^(/|\S+)\s+\S+\s+swap\s+'
+#   when: swap_file_path is defined
+
+# # Create UUID-based swap LV or partition on same device/VG
+# - name: Create swap LV in target VG
+#   when: target_vg is defined
+#   block:
+#     - name: Set LV path
+#       set_fact:
+#         swap_lv_path: "/dev/{{ target_vg.stdout | trim }}/swap"
+
+#     - name: Create LV if missing
+#       command: "lvcreate -n swap -L {{ desired_swap_mb }}M {{ target_vg.stdout | trim }}"
+#       args:
+#         creates: "{{ swap_lv_path }}"
+
+#     - name: Make swap signature
+#       command: "mkswap {{ swap_lv_path }}"
+
+#     - name: Get swap UUID
+#       command: "blkid -s UUID -o value {{ swap_lv_path }}"
+#       register: swap_uuid
+#       changed_when: false
+
+#     - name: Ensure UUID in fstab
+#       mount:
+#         name: none
+#         src: "UUID={{ swap_uuid.stdout }}"
+#         fstype: swap
+#         opts: sw
+#         state: present
+
+#     - name: Activate swap
+#       command: "swapon --uuid {{ swap_uuid.stdout }}"
+#       register: swapon_lv
+#       failed_when: swapon_lv.rc not in [0, 255]
+#       changed_when: swapon_lv.rc == 0
+
+# - name: Create swap partition on target disk
+#   when: target_disk is defined
+#   block:
+#     - name: Define partition path
+#       set_fact:
+#         swap_part_path: >-
+#           {{ target_disk ~ 'p1' if 'nvme' in target_disk else target_disk ~ '1' }}
+
+#     - name: Create swap partition
+#       parted:
+#         device: "{{ target_disk }}"
+#         number: 1
+#         state: present
+#         part_type: primary
+#         fs_type: linux-swap
+#         unit: MiB
+#         part_end: "{{ desired_swap_mb }}MiB"
+#         resize: yes
+
+#     - name: Make swap signature
+#       command: "mkswap {{ swap_part_path }}"
+
+#     - name: Get swap UUID
+#       command: "blkid -s UUID -o value {{ swap_part_path }}"
+#       register: swap_uuid_part
+#       changed_when: false
+
+#     - name: Ensure UUID in fstab
+#       mount:
+#         name: none
+#         src: "UUID={{ swap_uuid_part.stdout }}"
+#         fstype: swap
+#         opts: sw
+#         state: present
+
+#     - name: Activate swap
+#       command: "swapon --uuid {{ swap_uuid_part.stdout }}"
+#       register: swapon_part
+#       failed_when: swapon_part.rc not in [0, 255]
+#       changed_when: swapon_part.rc == 0
+
+# - name: Verify active swap meets/exceeds desired size
+#   command: "free -m"
+#   register: free_m
+#   changed_when: false
+
+# - name: Assert swap size OK
+#   assert:
+#     that:
+#       - "(free_m.stdout_lines | select('search','Swap:') | first).split()[1] | int >= desired_swap_mb"
+#     success_msg: "Swap active and >= desired size ({{ desired_swap_mb }} MiB)"
+#     fail_msg: "Active swap smaller than desired size ({{ desired_swap_mb }} MiB)"
+
+# ------------------------
+# DETECT DATA DISK + STORAGE CONFIG
+# ------------------------
+- name: Determine host role (Satellite vs Capsule)
+  set_fact:
+    effective_storage_config: >-
+      {{ (inventory_hostname in capsule_fqdns)
+          | ternary(capsule_storage_config, satellite_storage_config) }}
+
+- name: Gather block devices
+  command: lsblk -b -dn -o NAME,SIZE,TYPE
+  register: disks
+  changed_when: false
+
+- name: Find largest non-root, non-swap, non-mounted disk
+  set_fact:
+    detected_data_disk: >-
+      {{
+        '/dev/' ~ (
+          disks.stdout_lines
+          | map('split', ' ')
+          | selectattr('2','equalto','disk')
+          | rejectattr('0','equalto',(ansible_mounts | selectattr("mount","equalto","/") | map(attribute="device") | list | first) | regex_replace("^/dev/","") | regex_replace("p?\\d+$",""))
+          | rejectattr('0','equalto','nvme1n1')  # exclude known swap disk
+          | sort(attribute='1', reverse=True)
+          | first
+          | first
+        )
+      }}
+
+- name: Set data_disk in config fact
+  set_fact:
+    effective_storage_config: "{{ effective_storage_config | combine({'data_disk': detected_data_disk}) }}"
+
+- name: Debug summary for swap and storage detection
+  debug:
+    msg:
+      - "Host role: {{ 'Capsule' if (inventory_hostname in capsule_fqdns) else 'Satellite' }}"
+      - "Data disk selected for LVM: {{ effective_storage_config.data_disk }}"
+      - "VG name: {{ effective_storage_config.vg_name }}"
+      - "Number of LVs in plan: {{ effective_storage_config.volumes | length }}"
+      # - "Swap active: {{ (free_m.stdout_lines | select('search','Swap:') | first).split()[1] }} MiB total"

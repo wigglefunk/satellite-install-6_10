@@ -1,0 +1,36 @@
+---
+- name: Distribute Capsule cert tarballs to Capsule hosts
+  when: inventory_hostname in capsule_fqdns
+  block:
+
+    - name: Derive capsule shortname and tar filename
+      set_fact:
+        capsule_shortname: "{{ ansible_hostname }}"
+        capsule_tar_filename: "{{ ansible_fqdn }}-certs.tar"
+        capsule_tar_remote_path: "/root/capsule_cert/{{ capsule_shortname }}/{{ capsule_tar_filename }}"
+
+    - name: Ensure /root/capsule_cert exists on Capsule
+      file:
+        path: "/root/capsule_cert"
+        state: directory
+        owner: root
+        group: root
+        mode: '0700'
+
+    - name: Copy capsule cert tar and install instructions from Satellite
+      ansible.builtin.copy:
+        src: "{{ item.src }}"
+        dest: "/root/capsule_cert/{{ item.dest }}"
+        remote_src: yes
+      loop:
+        - { src: "/root/capsule_cert/{{ capsule_shortname }}/{{ capsule_fqdn }}-certs.tar", dest: "{{ capsule_fqdn }}-certs.tar" }
+        - { src: "/root/capsule_cert/{{ capsule_shortname }}/{{ capsule_fqdn }}-install.txt", dest: "{{ capsule_fqdn }}-install.txt" }
+      delegate_to: "{{ satellite_fqdns[0] }}"
+      register: capsule_file_copy
+
+    - name: Debug capsule tar copy
+      debug:
+        msg:
+          - "Copied cert tar for {{ ansible_fqdn }}"
+          - "From Satellite: {{ satellite_fqdns[0] }}"
+          - "To: /root/capsule_cert/{{ capsule_tar_filename }}"

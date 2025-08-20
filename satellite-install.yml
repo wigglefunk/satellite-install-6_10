@@ -1,0 +1,125 @@
+---
+# Red Hat Satellite 6.17 Installation Playbook
+# Executes installation workflow on target Satellite server
+
+- name: Install Red Hat Satellite 6.17
+  hosts: all  # AAP will limit to appropriate hosts via inventory
+  become: true
+  gather_facts: true
+  vars_files:
+    - group_vars/all.yml  # Explicitly load variables for AAP
+  
+  # Module defaults for Satellite API operations
+  # module_defaults:
+  #   group/redhat.satellite_operations.satellite:
+  #     server_url: "{{ satellite_server_url }}"
+  #     username: "{{ satellite_api_username }}"
+  #     password: "{{ satellite_api_password }}"
+  #     validate_certs: false
+      
+    # group/venafi.venafi:
+    #   credential: "fcm-vcert"
+    #   format: PEM
+    #   chain_option: ROOT_FIRST
+  
+  pre_tasks:
+    # Validate target system
+    - name: Validate minimum requirements
+      assert:
+        that:
+          - ansible_distribution == "RedHat"
+          - ansible_distribution_major_version == "9"
+          - ansible_memtotal_mb >= 20480  # 20GB minimum
+        fail_msg: "System does not meet minimum requirements for Satellite 6.17"
+        success_msg: "System meets minimum requirements"
+    
+    # DNS validation
+    - name: Validate DNS resolution
+      command: "nslookup {{ satellite_fqdn }}"
+      register: dns_check
+      failed_when: false
+      changed_when: false
+      timeout: "{{ dns_timeout }}"
+      when: validate_dns | bool
+    
+    - name: Fail if DNS validation failed
+      fail:
+        msg: "DNS resolution failed for {{ satellite_fqdn }}. Please fix DNS or set validate_dns to false"
+      when:
+        - validate_dns | bool
+        - dns_check.rc != 0
+    
+    - name: Display installation plan
+      debug:
+        msg:
+          - "Starting Prep and Satellite 6.17 installation"
+          - "Target: {{ satellite_fqdn }}"
+          - "Organization: {{ satellite_org }}"
+          - "Location: {{ satellite_location }}"
+  
+  roles:
+    # Phase 1: Prepare the hosts
+    - role: fcmcontrol-user-creation
+    - role: postgres-user-override
+    - role: prep_satellite_host
+      tags:
+        - prep
+        - storage
+        - packages
+    
+    # Phase 2: Install Satellite
+    - role: install_satellite
+      when: inventory_hostname in satellite_fqdns
+      tags:
+        - install
+        - satellite
+    
+    # Phase 3: Prepare Capsule certs from zips on Satellite
+    - role: prepare_capsule_certs
+      when: inventory_hostname in satellite_fqdns
+      tags:
+        - certs
+        - capsule
+
+    # Phase 4: Generate capsule certificates on Satellite
+    - role: generate_capsule_tar
+      when: inventory_hostname in satellite_fqdns
+      tags:
+        - capsule
+        - certs
+        - generate
+
+    # Phase 6: Distribute Capsule cert tarballs
+    - role: distribute_capsule_tar
+      when: inventory_hostname in capsule_fqdns
+      tags:
+        - capsule
+        - certs
+        - distribute
+
+
+  post_tasks:
+    - name: Installation complete message
+      debug:
+        msg:
+          - "Satellite 6.17 installation completed successfully!"
+          - "Access URL: {{ satellite_server_url }}"
+          - "Username: admin"
+          - "Next step: Run the post-configuration playbook"
+    
+    - name: Display certificate generation results
+      debug:
+        msg: "Capsule certificates generated for: {{ capsule_fqdn_list | join(', ') }}"
+      when:
+        - generate_capsule_certs | bool
+        - capsule_fqdn_list | length > 0
+    
+    - name: Create installation summary
+      set_stats:
+        data:
+          satellite_url: "{{ satellite_server_url }}"
+          satellite_version: "6.17"
+          organization: "{{ satellite_org }}"
+          location: "{{ satellite_location }}"
+          installation_date: "{{ ansible_date_time.iso8601 }}"
+          certificates_generated: "{{ generate_capsule_certs }}"
