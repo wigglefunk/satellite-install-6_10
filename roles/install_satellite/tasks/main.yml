@@ -266,7 +266,21 @@
     - custom_certs.stat.isdir | default(false)
   register: cert_update
 
+- name: create proxy definition
+  shell: |
+    hammer http-proxy create \
+    --name proxy-zsgov \
+    --url http://proxy-zsgov.external.lmco.com:80
+  #check_mode: no
+  #ignore_errors: yes
 
+- name: set default proxy
+  shell: |
+    hammer settings set \
+    --name content_default_http_proxy \
+    --value proxy-zsgov
+  #check_mode: no
+  #ignore_errors: yes
 
 # Installation summary
 - name: Satellite installation summary
