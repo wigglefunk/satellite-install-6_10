@@ -25,12 +25,12 @@
       loop:
         - { src: "/root/capsule_cert/{{ capsule_shortname }}/{{ capsule_fqdn }}-certs.tar", dest: "{{ capsule_fqdn }}-certs.tar" }
         - { src: "/root/capsule_cert/{{ capsule_shortname }}/{{ capsule_fqdn }}-install.txt", dest: "{{ capsule_fqdn }}-install.txt" }
-      delegate_to: "{{ satellite_fqdns[0] }}"
+      delegate_to: "{{ satellite_fqdn[0] }}"
       register: capsule_file_copy
 
     - name: Debug capsule tar copy
       debug:
         msg:
           - "Copied cert tar for {{ ansible_fqdn }}"
-          - "From Satellite: {{ satellite_fqdns[0] }}"
+          - "From Satellite: {{ satellite_fqdn[0] }}"
           - "To: /root/capsule_cert/{{ capsule_tar_filename }}"

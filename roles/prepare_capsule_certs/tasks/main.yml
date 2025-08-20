@@ -1,6 +1,6 @@
 ---
 - name: Run Capsule cert prep on Satellite hosts only
-  when: inventory_hostname in satellite_fqdns
+  when: inventory_hostname in satellite_fqdn
   block:
 
     - name: Loop through Capsule FQDNs

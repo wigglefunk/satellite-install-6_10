@@ -69,21 +69,21 @@
     
     # Phase 2: Install Satellite
     - role: install_satellite
-      when: inventory_hostname in satellite_fqdns
+      when: inventory_hostname in satellite_fqdn
       tags:
         - install
         - satellite
     
     # Phase 3: Prepare Capsule certs from zips on Satellite
     - role: prepare_capsule_certs
-      when: inventory_hostname in satellite_fqdns
+      when: inventory_hostname in satellite_fqdn
       tags:
         - certs
         - capsule
 
     # Phase 4: Generate capsule certificates on Satellite
     - role: generate_capsule_tar
-      when: inventory_hostname in satellite_fqdns
+      when: inventory_hostname in satellite_fqdn
       tags:
         - capsule
         - certs
