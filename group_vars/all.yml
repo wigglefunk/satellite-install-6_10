@@ -22,7 +22,7 @@ capsule_fqdns:
   - capsule2.example.com
 
 # API Credentials - Injected from AAP
-satellite_api_username: "{{ server_specific_username }}"  # This will have to be setup AFTER the install of Satellite(user)
+satellite_api_username: "{{ server_specific_username }}"  # This will have to be setup AFTER the install of Satellite(user) and will be a credential in AAP
 satellite_api_password: "{{ Satellite_API_token_us }}"  # From AAP credential setup AFTER the install of Satellite(token)
 
 # Organization and Location
