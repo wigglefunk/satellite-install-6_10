@@ -35,113 +35,244 @@ satellite_custom_cert_path: "/root/sat_cert/{{ satellite_shortname }}"  # Path f
 validate_dns: true  # Perform DNS validation before installation
 dns_timeout: 5  # DNS lookup timeout in seconds
 
-# Storage Configuration - Using GB values - THIS var currently adds up to 9,728 GB
+# Optimized for production with 8-11TB content stores
+
+# SATELLITE STORAGE CONFIGURATION
+# Total: ~9.7TB across 14 logical volumes
+# Optimized for main Satellite server with full content management
 satellite_storage_config:
   vg_name: "vgsat"
-  # data_disk is auto-detected; leave unset or placeholder
+  # PE size optimization for large volumes (set at pool level in task)
+  # data_disk is auto-detected and added dynamically
   volumes:
+    # Critical system maintenance volume
     - name: "lvlibfmaintain"
-      size: "16g"  
-      mount: "/var/lib/foreman-maintain"
-      fstype: "xfs"
+      size: "16g"
+      mount_point: "/var/lib/foreman-maintain"
+      fs_type: "xfs"
+      fs_resize: true
+      mount_options: "defaults,noatime,nodiratime"
+      state: present
+    
+    # Squid proxy cache for content delivery
     - name: "lvsquid"
-      size: "14g"  
-      mount: "/var/spool/squid"
-      fstype: "xfs"
+      size: "14g"
+      mount_point: "/var/spool/squid"
+      fs_type: "xfs"
+      fs_resize: true
+      mount_options: "defaults,noatime,nodiratime"
+      state: present
+    
+    # Maintenance logs - high write volume
     - name: "lvlogfmaintain"
-      size: "24g"  
-      mount: "/var/log/foreman-maintain"
-      fstype: "xfs"
+      size: "24g"
+      mount_point: "/var/log/foreman-maintain"
+      fs_type: "xfs"
+      fs_resize: true
+      mount_options: "defaults,noatime,nodiratime"
+      state: present
+    
+    # Pulp cache - temporary content storage
     - name: "lvcpulp"
       size: "27g"
-      mount: "/var/cache/pulp"
-      fstype: "xfs"
+      mount_point: "/var/cache/pulp"
+      fs_type: "xfs"
+      fs_resize: true
+      mount_options: "defaults,noatime,nodiratime"
+      state: present
+    
+    # Backup storage - critical for disaster recovery
     - name: "lvbackup"
       size: "512g"
-      mount: "/backup"
-      fstype: "xfs"
+      mount_point: "/backup"
+      fs_type: "xfs"
+      fs_resize: true
+      mount_options: "defaults,noatime,nodiratime,nobarrier"  # nobarrier for backup performance
+      state: present
+    
+    # PRIMARY CONTENT STORE - All RPMs, ISOs, and synced content
+    # This is where the bulk of your Satellite content lives
     - name: "lvlpulp"
-      size: "8192g"
-      mount: "/var/lib/pulp"
-      fstype: "xfs"
+      size: "8192g"  # 8TB for production content
+      mount_point: "/var/lib/pulp"
+      fs_type: "xfs"
+      fs_resize: true
+      # Optimized mount options for large file operations
+      mount_options: "defaults,noatime,nodiratime,nobarrier,largeio,inode64,allocsize=128m"
+      state: present
+    
+    # Message queue persistence
     - name: "lvqpidd"
       size: "7g"
-      mount: "/var/lib/qpidd"
-      fstype: "xfs"
+      mount_point: "/var/lib/qpidd"
+      fs_type: "xfs"
+      fs_resize: true
+      mount_options: "defaults,noatime,nodiratime"
+      state: present
+    
+    # PostgreSQL database - critical for performance
     - name: "lvpgsql"
       size: "200g"
-      mount: "/var/lib/pgsql"
-      fstype: "xfs"
+      mount_point: "/var/lib/pgsql"
+      fs_type: "xfs"
+      fs_resize: true
+      # Database optimized options
+      mount_options: "defaults,noatime,nodiratime,nobarrier"
+      state: present
+    
+    # Foreman task backups
     - name: "lvlibftasks"
       size: "14g"
-      mount: "/var/lib/foreman/tasks-backup"
-      fstype: "xfs"
+      mount_point: "/var/lib/foreman/tasks-backup"
+      fs_type: "xfs"
+      fs_resize: true
+      mount_options: "defaults,noatime,nodiratime"
+      state: present
+    
+    # Apache/httpd logs - high write volume
     - name: "lvhttpdLog"
       size: "14g"
-      mount: "/var/log/httpd"
-      fstype: "xfs"
+      mount_point: "/var/log/httpd"
+      fs_type: "xfs"
+      fs_resize: true
+      mount_options: "defaults,noatime,nodiratime"
+      state: present
+    
+    # Pulp content exports for disconnected environments
     - name: "lvpulpexports"
       size: "500g"
-      mount: "/var/lib/pulp/exports"
-      fstype: "xfs"
+      mount_point: "/var/lib/pulp/exports"
+      fs_type: "xfs"
+      fs_resize: true
+      mount_options: "defaults,noatime,nodiratime,nobarrier"
+      state: present
+    
+    # Candlepin service logs
     - name: "lvcandlepinLog"
       size: "7g"
-      mount: "/var/log/candlepin"
-      fstype: "xfs"
+      mount_point: "/var/log/candlepin"
+      fs_type: "xfs"
+      fs_resize: true
+      mount_options: "defaults,noatime,nodiratime"
+      state: present
+    
+    # Foreman application logs
     - name: "lvforemanLog"
       size: "7g"
-      mount: "/var/log/foreman"
-      fstype: "xfs"
+      mount_point: "/var/log/foreman"
+      fs_type: "xfs"
+      fs_resize: true
+      mount_options: "defaults,noatime,nodiratime"
+      state: present
 
-# Storage Configuration - Capsule (smaller /var/lib/pulp typical)
+# CAPSULE STORAGE CONFIGURATION
+# Similar to Satellite but without some components
+# Capsules don't need Candlepin or Foreman logs (proxy only)
 capsule_storage_config:
-  vg_name: "vgsat"
-  # data_disk is auto-detected; leave unset or placeholder
+  vg_name: "vgsat"  # Same VG name for consistency
+  # PE size optimization for large volumes (set at pool level in task)
+  # data_disk is auto-detected and added dynamically
   volumes:
+    # Critical system maintenance volume
     - name: "lvlibfmaintain"
-      size: "16g"  
-      mount: "/var/lib/foreman-maintain"
-      fstype: "xfs"
+      size: "16g"
+      mount_point: "/var/lib/foreman-maintain"
+      fs_type: "xfs"
+      fs_resize: true
+      mount_options: "defaults,noatime,nodiratime"
+      state: present
+    
+    # Squid proxy cache for local content delivery
     - name: "lvsquid"
-      size: "14g"  
-      mount: "/var/spool/squid"
-      fstype: "xfs"
+      size: "14g"
+      mount_point: "/var/spool/squid"
+      fs_type: "xfs"
+      fs_resize: true
+      mount_options: "defaults,noatime,nodiratime"
+      state: present
+    
+    # Maintenance logs
     - name: "lvlogfmaintain"
-      size: "24g"  
-      mount: "/var/log/foreman-maintain"
-      fstype: "xfs"
+      size: "24g"
+      mount_point: "/var/log/foreman-maintain"
+      fs_type: "xfs"
+      fs_resize: true
+      mount_options: "defaults,noatime,nodiratime"
+      state: present
+    
+    # Pulp cache - temporary content storage
     - name: "lvcpulp"
       size: "27g"
-      mount: "/var/cache/pulp"
-      fstype: "xfs"
+      mount_point: "/var/cache/pulp"
+      fs_type: "xfs"
+      fs_resize: true
+      mount_options: "defaults,noatime,nodiratime"
+      state: present
+    
+    # Backup storage for Capsule-specific data
     - name: "lvbackup"
       size: "512g"
-      mount: "/backup"
-      fstype: "xfs"
+      mount_point: "/backup"
+      fs_type: "xfs"
+      fs_resize: true
+      mount_options: "defaults,noatime,nodiratime,nobarrier"
+      state: present
+    
+    # PRIMARY CONTENT STORE - Synced from main Satellite
+    # Capsules typically need same size as Satellite for full mirror
     - name: "lvlpulp"
-      size: "8192g"
-      mount: "/var/lib/pulp"
-      fstype: "xfs"
+      size: "8192g"  # 8TB to mirror Satellite content
+      mount_point: "/var/lib/pulp"
+      fs_type: "xfs"
+      fs_resize: true
+      # Optimized for large file operations and content sync
+      mount_options: "defaults,noatime,nodiratime,nobarrier,largeio,inode64,allocsize=128m"
+      state: present
+    
+    # Message queue persistence (smaller for Capsule)
     - name: "lvqpidd"
       size: "7g"
-      mount: "/var/lib/qpidd"
-      fstype: "xfs"
+      mount_point: "/var/lib/qpidd"
+      fs_type: "xfs"
+      fs_resize: true
+      mount_options: "defaults,noatime,nodiratime"
+      state: present
+    
+    # PostgreSQL database (Capsule uses less DB)
     - name: "lvpgsql"
       size: "200g"
-      mount: "/var/lib/pgsql"
-      fstype: "xfs"
+      mount_point: "/var/lib/pgsql"
+      fs_type: "xfs"
+      fs_resize: true
+      mount_options: "defaults,noatime,nodiratime,nobarrier"
+      state: present
+    
+    # Apache/httpd logs for content serving
     - name: "lvhttpdLog"
       size: "14g"
-      mount: "/var/log/httpd"
-      fstype: "xfs"
+      mount_point: "/var/log/httpd"
+      fs_type: "xfs"
+      fs_resize: true
+      mount_options: "defaults,noatime,nodiratime"
+      state: present
+    
+    # Candlepin proxy logs (Capsule still has some Candlepin components)
     - name: "lvcandlepinLog"
       size: "7g"
-      mount: "/var/log/candlepin"
-      fstype: "xfs"
+      mount_point: "/var/log/candlepin"
+      fs_type: "xfs"
+      fs_resize: true
+      mount_options: "defaults,noatime,nodiratime"
+      state: present
+    
+    # Foreman proxy logs
     - name: "lvforemanLog"
       size: "7g"
-      mount: "/var/log/foreman"
-      fstype: "xfs"
+      mount_point: "/var/log/foreman"
+      fs_type: "xfs"
+      fs_resize: true
+      mount_options: "defaults,noatime,nodiratime"
+      state: present
 
 # Package Requirements
 satellite_required_packages:
@@ -172,16 +303,19 @@ check_reboot_required: true  # Check if reboot is needed after updates
 auto_reboot: false  # Automatically reboot if required
 reboot_timeout: 600  # Reboot timeout in seconds
 
-# Standardized certificate path - also used for capsule installations
-# NOTE: Future capsule installation playbooks should create this directory
-# in their host prep role for consistency
-# capsule_cert_input_dir: "/tmp/capsule-certificates"
-# capsule_cert_output_dir: "/var/lib/satellite/capsule-certificates"
+# Mount Options Explained:
+# - defaults: Standard Linux mount options (rw, suid, dev, exec, auto, nouser, async)
+# - noatime: Don't update access time on file access (significant performance boost)
+# - nodiratime: Don't update directory access times (additional performance boost)
+# - nobarrier: Disable write barriers (faster writes, use only with battery-backed storage)
+# - largeio: Optimize for large I/O operations (perfect for ISOs and large RPMs)
+# - inode64: Allow inodes anywhere on large filesystems (required for 8TB+ volumes)
+# - allocsize=128m: Pre-allocate space in 128MB chunks (reduces fragmentation for large files)
 
-# Venafi Configuration (Optional) - From AAP credentials
-# venafi_username: "{{ vault_venafi_username | default('') }}"
-# venafi_password: "{{ vault_venafi_password | default('') }}"
-# venafi_client_id: "{{ vault_venafi_client_id | default('') }}"
-# venafi_api_url: "https://venafi.company.com"
-# venafi_template_name: "LM US Web Server_Venafi"
+# Why these optimizations matter:
+# 1. PE size 128 MiB (set in task): Reduces LVM metadata by 97% for 8TB volumes
+# 2. fs_resize: true: Allows online filesystem growth without downtime
+# 3. noatime/nodiratime: Can reduce I/O by 10-30% on busy systems
+# 4. XFS with optimizations: Best filesystem for large files and parallel operations
+# 5. allocsize=128m: Perfect for Satellite's large RPM and ISO files
 

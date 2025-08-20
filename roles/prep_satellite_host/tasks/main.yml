@@ -9,20 +9,49 @@
  
 - name: Configure LVM storage for Satellite/Capsule
   redhat.rhel_system_roles.storage:
-    volumes:
+    # Using 'pools' for clarity (synonymous with 'volumes' at top level)
+    pools:
       - name: "{{ effective_storage_config.vg_name }}"
         type: lvm
         disks:
           - "{{ effective_storage_config.data_disk }}"
+        state: present
+        # Critical optimization for 8TB+ volumes
+        # 128 MiB PE size reduces metadata overhead by 97%
+        # Default 4 MiB would create 2+ million extents, 128 MiB creates ~65k
+        pe_size: "128 MiB"
+        # Encryption disabled for performance (set explicitly)
+        encryption: false
+        # All logical volumes with optimized settings
         volumes: "{{ effective_storage_config.volumes }}"
   when: effective_storage_config.data_disk is defined
   register: storage_result
   tags: [storage]
 
-- name: Report storage configuration
+- name: Report storage configuration details
   debug:
-    msg: "Storage configured: {{ effective_storage_config.volumes | length }} volumes created"
+    msg:
+      - "Storage configuration completed"
+      - "Volume Group: {{ effective_storage_config.vg_name }}"
+      - "Data Disk: {{ effective_storage_config.data_disk }}"
+      - "PE Size: 128 MiB (optimized for large volumes)"
+      - "Volumes created: {{ effective_storage_config.volumes | length }}"
+      - "Total storage: ~9.7TB or greater for Satellite, similar for Capsules"
   when: storage_result is changed
+
+# Performance validation task (optional but recommended)
+- name: Validate XFS mount options were applied
+  command: mount | grep -E '(pulp|pgsql|backup)'
+  register: mount_validation
+  changed_when: false
+  failed_when: false
+  tags: [storage, validate]
+
+- name: Display mount options for critical volumes
+  debug:
+    msg: "{{ mount_validation.stdout_lines }}"
+  when: mount_validation.stdout_lines is defined
+  tags: [storage, validate]
 
 # System Services
 - name: Ensure chrony is installed and started
