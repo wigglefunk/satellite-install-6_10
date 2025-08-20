@@ -2,9 +2,10 @@
 # Red Hat Satellite 6.17 Installation Variables
 # Variables injected by AAP are marked with "From AAP credential"
 
-# Satellite Server Configuration
+# Satellite Server Configuration 
 sat_version: "6.17"
 satellite_fqdn: "satellitetestserver.com"
+satellite_shortname: "satellite-test"
 satellite_server_url: "https://{{ satellite_fqdn }}"  # Used in module_defaults
 satellite_loadbalanced: false  # Set to true if behind a load balancer
 satellite_loadbalancer_fqdn: ""  # Load balancer FQDN if applicable
@@ -12,11 +13,8 @@ satellite_setup_username: "admin"  # Default admin user
 satellite_initial_admin_password: "vault"
 server_proxy_hostname: proxy-zsgov.external.lmco.com
 uuid: "e4b7f5a0-8c3d-11e9-bc42-526af7764f64"  # EO_ITRA UUID from the portal
-satellite_shortname:
-  - testserver
-  - testserver2
 
-# Hosts treated as Capsules (exact FQDNs).
+# Hosts that are Capsules (exact FQDNs).
 capsule_fqdns:
   - capsule1.example.com
   - capsule2.example.com
