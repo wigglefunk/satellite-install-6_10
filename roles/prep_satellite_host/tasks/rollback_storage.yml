@@ -1,0 +1,44 @@
+---
+# Rollback tasks for storage configuration failures
+# Only runs if storage configuration fails
+
+- name: Storage rollback initiated
+  debug:
+    msg:
+      - "================================"
+      - "STORAGE ROLLBACK INITIATED"
+      - "Failed at: {{ failed_at }}"
+      - "Rollback point: {{ rollback_point }}"
+      - "================================"
+
+- name: Check if VG was partially created
+  command: vgs {{ effective_storage_config.vg_name }}
+  register: vg_check
+  failed_when: false
+  changed_when: false
+
+- name: Remove VG if it exists
+  when: vg_check.rc == 0
+  block:
+    - name: Deactivate volume group
+      command: vgchange -an {{ effective_storage_config.vg_name }}
+      failed_when: false
+      
+    - name: Remove volume group
+      command: vgremove -f {{ effective_storage_config.vg_name }}
+      failed_when: false
+      
+    - name: Remove physical volume
+      command: pvremove -f {{ effective_storage_config.data_disk }}
+      failed_when: false
+
+- name: Rollback complete
+  debug:
+    msg: "Storage rollback completed. System returned to pre-storage state."
+
+- name: Fail with descriptive message
+  fail:
+    msg: |
+      Storage configuration failed and has been rolled back.
+      Please investigate the issue and re-run the playbook.
+      Failed operation: {{ failed_at }}

@@ -1,0 +1,52 @@
+---
+# Task file to pre-create VG with optimal PE size for large Satellite/Capsule volumes
+# This runs on BOTH Satellite and Capsule servers to optimize LVM performance
+
+- name: Check if volume group {{ effective_storage_config.vg_name }} already exists
+  command: vgs {{ effective_storage_config.vg_name }}
+  register: vg_exists
+  failed_when: false
+  changed_when: false
+
+- name: Pre-create VG with 128 MiB PE size for optimal performance
+  command: >
+    vgcreate -s 128M {{ effective_storage_config.vg_name }} {{ effective_storage_config.data_disk }}
+  when:
+    - vg_exists.rc != 0  # VG doesn't exist
+    - effective_storage_config.data_disk is defined
+  register: vg_precreated
+
+- name: Report VG pre-creation with optimal PE size
+  debug:
+    msg:
+      - "================================================================"
+      - "Volume Group Pre-Creation Summary"
+      - "================================================================"
+      - "Host: {{ inventory_hostname }}"
+      - "Role: {{ host_role | upper }}"
+      - "VG Name: {{ effective_storage_config.vg_name }}"
+      - "PE Size: 128 MiB (optimal for large volumes)"
+      - "Disk: {{ effective_storage_config.data_disk }}"
+      - "Benefit: 97% reduction in LVM metadata overhead"
+      - "================================================================"
+  when: vg_precreated is changed
+
+- name: VG already exists - verify PE size
+  block:
+    - name: Get current PE size of existing VG
+      command: vgs {{ effective_storage_config.vg_name }} -o vg_extent_size --noheadings --units m
+      register: current_pe_size
+      changed_when: false
+
+    - name: Report existing VG status
+      debug:
+        msg:
+          - "Volume group '{{ effective_storage_config.vg_name }}' already exists"
+          - "Current PE size: {{ current_pe_size.stdout | trim }}"
+          - "{{ 'WARNING: Not using optimal 128M PE size!' if '128' not in current_pe_size.stdout else 'OK: Using optimal PE size' }}"
+  when: vg_exists.rc == 0
+
+# Set fact for storage role to know whether to pass disks or not
+- name: Set VG status for storage role
+  set_fact:
+    vg_already_exists: "{{ vg_exists.rc == 0 or vg_precreated is changed }}"

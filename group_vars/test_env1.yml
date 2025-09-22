@@ -2,17 +2,17 @@
 # Red Hat Satellite 6.17 Installation Variables
 # Variables injected by AAP are marked with "From AAP credential"
 
-# Satellite Server Configuration 
+# Satellite Server Configuration
 sat_version: "6.17"
-satellite_fqdn: "devsatellite.example.com"
-satellite_shortname: "devsatellite"
+satellite_fqdn: "testsatellite.example.com"
+satellite_shortname: "testsatellite"
 satellite_server_url: "https://{{ satellite_fqdn }}"
 satellite_setup_username: "{{ app_username }}"  # Default admin user - From AAP credential
 satellite_initial_admin_password: "{{ app_password }}"  # From AAP credential
-server_proxy_hostname: "host5.example.com"
+server_proxy_hostname: "host6.example.com"
 redhat_cdn_username: "{{ app_username2 }}"  # From AAP credential
 redhat_cdn_password: "{{ app_password2 }}"  # From AAP credential
-uuid: "c8650970"  # EO_ITRA_Prukop UUID from the portal
+uuid: "f6e68a66"  # EO_ITRA_mazanec UUID from the portal
 cert_pass: "fcm"
 
 # ensure python host4.example.com the EE is not consistent
@@ -20,7 +20,7 @@ ansible_python_interpreter: /usr/bin/python3
 
 # Hosts that are Capsules (exact FQDNs). This is a list. Set one or many.
 capsule_fqdns:
-  - devcapsule.example.com
+  - testcapsule1.example.com
   # - host1.example.com  # Example of additional capsule
 
 # LOAD BALANCER CONFIGURATION
@@ -32,7 +32,7 @@ loadbalanced_capsules: []
 # host12 load balancer FQDN that clients will use to connect
 # Only required if loadbalanced_capsules has entries
 capsule_loadbalancer_fqdn: ""
-# capsule_loadbalancer_fqdn: "host3.example.com"  # Example: host14 and set when using load balancer
+# capsule_loadbalancer_fqdn: "host2.example.com"  # Example: host14 and set when using load balancer
 
 # IMPORTANT: host7 load-balanced Capsules, ensure your custom SSL certificates include:
 # 1. host12 Capsule's FQDN as the CN or in the SAN
@@ -69,7 +69,7 @@ satellite_storage_config:
       fs_type: "xfs"
       mount_options: "defaults,noatime,nodiratime"
       state: host10
-    
+
     # Squid proxy cache for content delivery
     - name: "lvsquid"
       size: "14 GiB"
@@ -77,7 +77,7 @@ satellite_storage_config:
       fs_type: "xfs"
       mount_options: "defaults,noatime,nodiratime"
       state: host10
-    
+
     # Maintenance logs - high write volume
     - name: "lvlogfmaintain"
       size: "24 GiB"
@@ -85,7 +85,7 @@ satellite_storage_config:
       fs_type: "xfs"
       mount_options: "defaults,noatime,nodiratime"
       state: host10
-    
+
     # Pulp cache - temporary content storage
     - name: "lvcpulp"
       size: "27 GiB"
@@ -93,7 +93,7 @@ satellite_storage_config:
       fs_type: "xfs"
       mount_options: "defaults,noatime,nodiratime"
       state: host10
-    
+
     # Backup storage - critical for disaster recovery
     - name: "lvbackup"
       size: "512 GiB"
@@ -101,7 +101,7 @@ satellite_storage_config:
       fs_type: "xfs"
       mount_options: "defaults,noatime,nodiratime" 
       state: host10
-    
+
     # PRIMARY CONTENT STORE - All RPMs, ISOs, and synced content
     # This is where the bulk of your Satellite content lives
     - name: "lvlpulp"
@@ -111,7 +111,7 @@ satellite_storage_config:
       # Optimized mount options for large file operations
       mount_options: "defaults,noatime,nodiratime,largeio,inode64,allocsize=128m"
       state: host10
-    
+
     # Message queue persistence
     - name: "lvqpidd"
       size: "7 GiB"
@@ -119,7 +119,7 @@ satellite_storage_config:
       fs_type: "xfs"
       mount_options: "defaults,noatime,nodiratime"
       state: host10
-    
+
     # PostgreSQL database - critical for performance
     - name: "lvpgsql"
       size: "200 GiB"
@@ -128,7 +128,7 @@ satellite_storage_config:
       # Database optimized options
       mount_options: "defaults,noatime,nodiratime"
       state: host10
-    
+
     # Foreman task backups
     - name: "lvlibftasks"
       size: "14 GiB"
@@ -136,7 +136,7 @@ satellite_storage_config:
       fs_type: "xfs"
       mount_options: "defaults,noatime,nodiratime"
       state: host10
-    
+
     # Apache/httpd logs - high write volume
     - name: "lvhttpdLog"
       size: "14 GiB"
@@ -144,7 +144,7 @@ satellite_storage_config:
       fs_type: "xfs"
       mount_options: "defaults,noatime,nodiratime"
       state: host10
-    
+
     # Pulp content exports for disconnected environments
     - name: "lvpulpexports"
       size: "500 GiB"
@@ -152,7 +152,7 @@ satellite_storage_config:
       fs_type: "xfs"
       mount_options: "defaults,noatime,nodiratime"
       state: host10
-    
+
     # Candlepin service logs
     - name: "lvcandlepinLog"
       size: "7 GiB"
@@ -160,7 +160,7 @@ satellite_storage_config:
       fs_type: "xfs"
       mount_options: "defaults,noatime,nodiratime"
       state: host10
-    
+
     # Foreman application logs
     - name: "lvforemanLog"
       size: "7 GiB"
@@ -182,7 +182,7 @@ capsule_storage_config:
       fs_type: "xfs"
       mount_options: "defaults,noatime,nodiratime"
       state: host10
-    
+
     # Squid proxy cache for local content delivery
     - name: "lvsquid"
       size: "14 GiB"
@@ -190,7 +190,7 @@ capsule_storage_config:
       fs_type: "xfs"
       mount_options: "defaults,noatime,nodiratime"
       state: host10
-    
+
     # Maintenance logs
     - name: "lvlogfmaintain"
       size: "24 GiB"
@@ -198,7 +198,7 @@ capsule_storage_config:
       fs_type: "xfs"
       mount_options: "defaults,noatime,nodiratime"
       state: host10
-    
+
     # Pulp cache - temporary content storage
     - name: "lvcpulp"
       size: "27 GiB"
@@ -206,7 +206,7 @@ capsule_storage_config:
       fs_type: "xfs"
       mount_options: "defaults,noatime,nodiratime"
       state: host10
-    
+
     # Backup storage for Capsule-specific data
     - name: "lvbackup"
       size: "512 GiB"
@@ -214,7 +214,7 @@ capsule_storage_config:
       fs_type: "xfs"
       mount_options: "defaults,noatime,nodiratime"
       state: host10
-    
+
     # PRIMARY CONTENT STORE - Synced from main Satellite
     - name: "lvlpulp"
       size: "5300 GiB"  # Scaled for 6TB data volume on Capsules
@@ -223,7 +223,7 @@ capsule_storage_config:
       # Optimized for large file operations and content sync
       mount_options: "defaults,noatime,nodiratime,largeio,inode64,allocsize=128m"
       state: host10
-    
+
     # Message queue persistence (smaller for Capsule)
     - name: "lvqpidd"
       size: "7 GiB"
@@ -231,7 +231,7 @@ capsule_storage_config:
       fs_type: "xfs"
       mount_options: "defaults,noatime,nodiratime"
       state: host10
-    
+
     # PostgreSQL database (Capsule uses less DB)
     - name: "lvpgsql"
       size: "200 GiB"
@@ -239,7 +239,7 @@ capsule_storage_config:
       fs_type: "xfs"
       mount_options: "defaults,noatime,nodiratime"
       state: host10
-    
+
     # Apache/httpd logs for content serving
     - name: "lvhttpdLog"
       size: "14 GiB"
@@ -247,7 +247,7 @@ capsule_storage_config:
       fs_type: "xfs"
       mount_options: "defaults,noatime,nodiratime"
       state: host10
-    
+
     # Candlepin proxy logs (Capsule still has some Candlepin components)
     - name: "lvcandlepinLog"
       size: "7 GiB"
@@ -255,7 +255,7 @@ capsule_storage_config:
       fs_type: "xfs"
       mount_options: "defaults,noatime,nodiratime"
       state: host10
-    
+
     # Foreman proxy logs
     - name: "lvforemanLog"
       size: "7 GiB"

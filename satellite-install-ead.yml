@@ -8,7 +8,7 @@
   become: true
   gather_facts: true
   vars_files:
-    - group_vars/all.yml  # Explicitly load variables for AAP
+    - group_vars/ead_env.yml  # Explicitly load variables for AAP
   
   # Module defaults for Satellite API operations
   module_defaults:

@@ -1,209 +1,594 @@
 ---
 # Host preparation tasks for Red Hat Satellite 6.17 installation
 # Configures storage, installs packages, and prepares the system
+# This role runs on BOTH Satellite and Capsule servers
+# Skip expensive tasks on already-installed Satellite
+# We add this to tasks:  when: not (is_satellite and satellite_already_installed | default(false))
+# HOW THIS CONDITION WORKS:
+# 1. Check: Am I the Satellite? (is_satellite)
+# 2. Check: Is Satellite already installed? (satellite_already_installed)
+# 3. If satellite_already_installed doesn't exist (like on Capsules),
+#    default(false) says "assume it's not installed"
+# 4. If BOTH are true, skip this task
+# 5. Otherwise (Capsules, fresh installs), run it
+#
+# EXAMPLES:
+# - Capsule: is_satellite=false, satellite_already_installed=undefined→false, RUN task
+# - Fresh Satellite: is_satellite=true, satellite_already_installed=false, RUN task  
+# - Existing Satellite: is_satellite=true, satellite_already_installed=true, SKIP task
 
-# Always run swap provisioning / migration first
-- name: Ensure swap is UUID-based, sized, and active
-  import_tasks: swap.yml
-  tags: [always, swap]
- 
-- name: Configure LVM storage for Satellite/Capsule
-  redhat.rhel_system_roles.storage:
-    # Using 'pools' for clarity (synonymous with 'volumes' at top level)
-    pools:
-      - name: "{{ effective_storage_config.vg_name }}"
-        type: lvm
-        disks:
-          - "{{ effective_storage_config.data_disk }}"
-        state: present
-        # Critical optimization for 8TB+ volumes
-        # 128 MiB PE size reduces metadata overhead by 97%
-        # Default 4 MiB would create 2+ million extents, 128 MiB creates ~65k
-        pe_size: "128 MiB"
-        # Encryption disabled for performance (set explicitly)
-        encryption: false
-        # All logical volumes with optimized settings
-        volumes: "{{ effective_storage_config.volumes }}"
-  when: effective_storage_config.data_disk is defined
-  register: storage_result
-  tags: [storage]
 
-- name: Report storage configuration details
+# ============================================================================
+# PHASE 1: ROLE DETERMINATION AND VALIDATION
+# ============================================================================
+
+- name: Determine if host is Satellite or Capsule
+  set_fact:
+    is_satellite: "{{ inventory_hostname == satellite_fqdn }}"
+    is_capsule: "{{ inventory_hostname in capsule_fqdns }}"
+
+- name: Validate host role is defined
+  fail:
+    msg: |
+      ERROR: Host '{{ inventory_hostname }}' is not defined as either Satellite or Capsule!
+      This host must be either:
+        - The Satellite server: {{ satellite_fqdn }}
+        - One of the Capsule servers: {{ capsule_fqdns | join(', ') }}
+  when: not is_satellite and not is_capsule
+
+- name: Set host role and configuration
+  set_fact:
+    host_role: "{{ is_satellite | ternary('satellite', 'capsule') }}"
+    effective_storage_config: "{{ is_satellite | ternary(satellite_storage_config, capsule_storage_config) }}"
+    rollback_point: "prep_start"  # Initialize rollback tracking
+
+- name: Display host role determination
   debug:
     msg:
-      - "Storage configuration completed"
-      - "Volume Group: {{ effective_storage_config.vg_name }}"
-      - "Data Disk: {{ effective_storage_config.data_disk }}"
-      - "PE Size: 128 MiB (optimized for large volumes)"
-      - "Volumes created: {{ effective_storage_config.volumes | length }}"
-      - "Total storage: ~9.7TB or greater for Satellite, similar for Capsules"
-  when: storage_result is changed
+      - "================================================================"
+      - "Host Role: {{ host_role | upper }}"
+      - "FQDN: {{ inventory_hostname }}"
+      - "Storage Configuration: {{ host_role }}_storage_config"
+      - "================================================================"
 
-# Performance validation task (optional but recommended)
-- name: Validate XFS mount options were applied
-  command: mount | grep -E '(pulp|pgsql|backup)'
-  register: mount_validation
+# ============================================================================
+# PHASE 2: VALIDATE PREREQUISITES
+# ============================================================================
+
+- name: Validate RHEL version
+  assert:
+    that:
+      - ansible_distribution == "RedHat"
+      - ansible_distribution_major_version == "9"
+    fail_msg: "This playbook requires RHEL 9. Current: {{ ansible_distribution }} {{ ansible_distribution_major_version }}"
+
+- name: Set RHEL major version
+  set_fact:
+    rhel_major_version: "{{ ansible_distribution_major_version | int }}"
+
+- name: Ensure blivet packages are installed # Required for redhat.rhel_system_roles.storage role
+  ansible.builtin.package:
+    name:
+      - python3-blivet
+      - python3-pyudev
+      - python-unversioned-command
+    state: present
+
+# ============================================================================
+# PHASE 3: DATA DISK DETECTION (Fixed for proper size comparison)
+# ============================================================================
+
+- name: Gather block devices information
+  ansible.builtin.command: lsblk -b -dn -o NAME,SIZE,TYPE
+  register: disks
   changed_when: false
-  failed_when: false
-  tags: [storage, validate]
 
-- name: Display mount options for critical volumes
-  debug:
-    msg: "{{ mount_validation.stdout_lines }}"
-  when: mount_validation.stdout_lines is defined
-  tags: [storage, validate]
+- name: Get root disk device
+  ansible.builtin.set_fact:
+    root_disk: >-
+      {{
+        ansible_mounts
+        | selectattr('mount','equalto','/')
+        | map(attribute='device')
+        | list
+        | first
+        | regex_replace('^/dev/','')
+        | regex_replace('p?[0-9]+$','')
+      }}
 
-# System Services
+- name: Parse disk information with proper numeric conversion
+  ansible.builtin.set_fact:
+    disk_list: >-
+      {%- set result = [] -%}
+      {%- for line in disks.stdout_lines -%}
+        {%- set parts = line.split() -%}
+        {%- if parts[2] == 'disk' -%}
+          {%- set _ = result.append({'name': parts[0], 'size': parts[1] | int, 'type': parts[2]}) -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {{ result }}
+
+# Debug task to verify disk parsing (can be removed in production)
+- name: Display parsed disk information
+  ansible.builtin.debug:
+    msg:
+      - "Root disk detected: {{ root_disk }}"
+      - "All disks found:"
+      - "{{ disk_list }}"
+    verbosity: 1
+
+# Since these are fresh servers, we can be more aggressive
+# Now properly sorting by numeric size, not string comparison!
+- name: Find largest non-root disk for data
+  ansible.builtin.set_fact:
+    detected_data_disk: >-
+      {%- set valid_disks = [] -%}
+      {%- for disk in disk_list -%}
+        {%- if disk.name != root_disk -%}
+          {%- set _ = valid_disks.append(disk) -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {%- if valid_disks | length > 0 -%}
+        {{ '/dev/' ~ (valid_disks | sort(attribute='size', reverse=True) | first).name }}
+      {%- else -%}
+        {{ '/dev/' }}
+      {%- endif -%}
+
+# Additional validation - show what we selected and why
+- name: Display disk selection logic
+  ansible.builtin.debug:
+    msg:
+      - "Selected data disk: {{ detected_data_disk }}"
+      - "Disk sizes in GB:"
+      - "{% for disk in disk_list %}  {{ disk.name }}: {{ (disk.size / 1073741824) | round(2) }} GB{% endfor %}"
+  when: detected_data_disk != '/dev/'
+
+- name: Validate data disk was found
+  ansible.builtin.fail:
+    msg: |
+      ERROR: No suitable data disk found!
+      Root disk: /dev/{{ root_disk }}
+      Available disks: {{ disk_list | map(attribute='name') | list }}
+      
+      Please ensure a second disk is attached for LVM storage.
+  when: detected_data_disk is not defined or detected_data_disk == '/dev/'
+
+- name: Update storage configuration with detected disk
+  ansible.builtin.set_fact:
+    effective_storage_config: "{{ effective_storage_config | combine({'data_disk': detected_data_disk}) }}"
+
+- name: Display storage detection results
+  ansible.builtin.debug:
+    msg:
+      - "Root disk: /dev/{{ root_disk }}"
+      - "Data disk: {{ effective_storage_config.data_disk }}"
+      - "VG name: {{ effective_storage_config.vg_name }}"
+      - "Data disk size: {{ ((disk_list | selectattr('name', 'equalto', detected_data_disk | replace('/dev/', '')) | first).size / 1073741824) | round(2) }} GB"
+
+# ============================================================================
+# PHASE 4: CONFIGURE LVM STORAGE WITH ROLLBACK
+# ============================================================================
+
+- name: Create rollback checkpoint before storage changes
+  set_fact:
+    rollback_point: "pre_storage"
+
+# Include PE size optimization
+- name: Optimize volume group PE size for large volumes
+  include_tasks: optimize_vg_pe_size.yml
+  when: effective_storage_config.data_disk is defined
+
+# Configure storage using RHEL system role
+- name: Configure LVM storage for {{ host_role }}
+  block:
+    - name: Apply storage configuration
+      ansible.builtin.include_role:
+        name: redhat.rhel_system_roles.storage
+      vars:
+        storage_pools:
+          - name: "{{ effective_storage_config.vg_name }}"
+            type: lvm
+            disks: "{{ [] if (vg_already_exists | default(false)) else [effective_storage_config.data_disk] }}"
+            state: present
+            encryption: false
+            volumes: "{{ effective_storage_config.volumes }}"
+      when: effective_storage_config.data_disk is defined
+      register: storage_result
+
+    - name: Validate critical mount points exist
+      stat:
+        path: "{{ item }}"
+      loop:
+        - /var/lib/pulp      # Critical for content storage
+        - /var/lib/pgsql     # Critical for database
+        - /backup            # Critical for disaster recovery
+      register: critical_mounts
+      failed_when: not critical_mounts.stat.exists or not critical_mounts.stat.isdir
+
+    - name: Update rollback point after successful storage
+      set_fact:
+        rollback_point: "storage_complete"
+
+  rescue:
+    - name: Storage configuration failed - attempting rollback
+      include_tasks: rollback_storage.yml
+      vars:
+        failed_at: "storage_configuration"
+
+# ============================================================================
+# PHASE 5: SYSTEM CONFIGURATION
+# ============================================================================
+
 - name: Ensure chrony is installed and started
   ansible.builtin.systemd:
     name: chronyd
     state: started
     enabled: true
-  register: chrony_status
 
-# SELinux Configuration
 - name: Set SELinux to permissive mode
   ansible.posix.selinux:
     policy: targeted
     state: "{{ selinux_mode }}"
   register: selinux_status
-
-- name: Report SELinux change
-  debug:
-    msg: "SELinux set to {{ selinux_mode }} mode"
-  when: selinux_status is changed
-
-# Firewall Configuration
+  
 - name: Disable firewalld for installation
   ansible.builtin.systemd:
     name: firewalld
     state: stopped
     enabled: false
   when: not firewall_enabled
-  failed_when: false  # Don't fail if firewalld doesn't exist
-  register: firewall_status
+  failed_when: false
 
-- name: "Add fcmcontrol user"
+# Critical: Without this certificate, Satellite systems cannot validate Red Hat's SSL
+# certificates when connecting to the CDN, causing SSL errors
+
+- name: Ensure /etc/rhsm/ca directory exists
+  ansible.builtin.file:
+    path: /etc/rhsm/ca
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Copy Red Hat UEP certificate to all systems
+  ansible.builtin.copy:
+    src: files/redhat_pem/redhat-uep.pem  # Source file in your repo
+    dest: /etc/rhsm/ca/redhat-uep.pem
+    owner: root
+    group: root
+    mode: '0644'
+    backup: yes  # Keep backup if file already exists
+  register: uep_cert_copy
+
+- name: Verify Red Hat UEP certificate is present
+  ansible.builtin.stat:
+    path: /etc/rhsm/ca/redhat-uep.pem
+  register: uep_cert_stat
+  failed_when: not uep_cert_stat.stat.exists
+
+- name: Report UEP certificate deployment
+  debug:
+    msg:
+      - "Red Hat UEP Certificate Status:"
+      - "  Deployed to: /etc/rhsm/ca/redhat-uep.pem"
+      - "  File exists: {{ uep_cert_stat.stat.exists }}"
+      - "  Size: {{ uep_cert_stat.stat.size }} bytes"
+      - "  Required for: SSL validation to Red Hat CDN"
+
+# ============================================================================
+# PHASE 6: USER MANAGEMENT
+# ============================================================================
+
+- name: Add fcmcontrol user for management
   ansible.builtin.include_role:
     name: fcmcontrol-user-creation
 
-- name: "Fix postgres user - create override"
+- name: Configure postgres user override
   ansible.builtin.include_role:
     name: postgres-user-override
 
-# Package Installation
+# ============================================================================
+# PHASE 7: PACKAGE MANAGEMENT
+# ============================================================================
+
 - name: Install required packages
   ansible.builtin.dnf:
     name: "{{ satellite_required_packages }}"
     state: present
   register: package_install
+  when: not (is_satellite and satellite_already_installed | default(false))
 
-- name: Report package installation
-  debug:
-    msg: "Installed {{ package_install.results | default([]) | length }} packages"
-  when: package_install is changed
+# Wait for any package locks before updating
+- name: Update all packages with lock handling
+  block:
+    - name: Update all packages
+      ansible.builtin.dnf:
+        name: "*"
+        state: latest
+        lock_timeout: 300  # Wait up to 5 minutes for lock
+      register: system_update
+      when: not (is_satellite and satellite_already_installed | default(false))
+  
+  rescue:
+    - name: Clear DNF cache and retry
+      command: dnf clean all
+      changed_when: true
+      when: not (is_satellite and satellite_already_installed | default(false))
 
-# System Updates
-- name: Update all packages
-  ansible.builtin.dnf:
-    name: "*"
-    state: latest
-  register: system_update
-  when: true  # Always update for fresh installation
+    - name: Retry package update
+      ansible.builtin.dnf:
+        name: "*"
+        state: latest
+      register: system_update
+      when: not (is_satellite and satellite_already_installed | default(false))
 
-- name: Report update status
-  debug:
-    msg: "Updated {{ system_update.results | default([]) | length }} packages"
-  when: system_update is changed
+# ============================================================================
+# PHASE 8: REBOOT HANDLING (Simplified)
+# ============================================================================
 
-# Check for required reboot
-- name: Check if reboot is required
-  ansible.builtin.stat:
-    path: /var/run/reboot-required
-  register: reboot_required_file
-  when: check_reboot_required | bool
-
-- name: Check for kernel updates requiring reboot
-  ansible.builtin.shell: |
-    if [ $(rpm -q --last kernel | head -1 | awk '{print $1}' | sed 's/kernel-//') != $(uname -r) ]; then
-      echo "reboot required"
-    fi
-  register: kernel_check
+- name: Check if reboot is required using needs-restarting
+  command: dnf needs-restarting -r
+  register: needs_restarting
   changed_when: false
+  failed_when: needs_restarting.rc not in [0, 1]
   when: check_reboot_required | bool
 
 - name: Set reboot required fact
-  ansible.builtin.set_fact:
-    needs_reboot: "{{ (reboot_required_file.stat.exists | default(false)) or ('reboot required' in kernel_check.stdout | default('')) }}"
+  set_fact:
+    needs_reboot: "{{ needs_restarting.rc == 1 }}"
   when: check_reboot_required | bool
 
-# Reboot if required
+# Simplified AAP-compatible reboot
 - name: Reboot system if required
-  ansible.builtin.reboot:
-    reboot_timeout: "{{ reboot_timeout }}"
-    msg: "Rebooting for system updates"
   when:
     - auto_reboot | bool
     - needs_reboot | default(false)
+  block:
+    - name: Reboot the system
+      ansible.builtin.shell: |
+        sleep 2 && shutdown -r now "Ansible reboot for system updates"
+      async: 1
+      poll: 0
+      ignore_errors: true
+      changed_when: true
 
-- name: Report reboot requirement
+    - name: Wait for system to reboot
+      ansible.builtin.wait_for_connection:
+        connect_timeout: 20
+        sleep: 5
+        delay: 40  # Give system time to actually go down
+        timeout: "{{ reboot_timeout }}"
+
+    - name: Verify system is back
+      ansible.builtin.ping:
+
+# ============================================================================
+# PHASE 9: CLEAN EXISTING REGISTRATIONS (SATELLITE ONLY)
+# ============================================================================
+# Uses subscription-manager identity for reliable registration detection
+# Only runs on Satellite server, not Capsules. This is required because force provisioned servers
+# come registered to Satellite. Satellite servers must register to CDN. 
+
+- name: Check current registration using identity command
+  command: subscription-manager identity
+  register: sub_identity
+  changed_when: false
+  failed_when: false
+  when: 
+    - inventory_hostname == satellite_fqdn
+    - not (is_satellite and satellite_already_installed | default(false))
+
+- name: Determine if system is registered
+  set_fact:
+    system_is_registered: "{{ 'system identity:' in sub_identity.stdout | lower }}"
+  when: 
+    - inventory_hostname == satellite_fqdn
+    - not (is_satellite and satellite_already_installed | default(false))
+
+- name: Display registration check results
   debug:
-    msg: "System requires reboot - please reboot manually"
-  when:
-    - not auto_reboot | bool
-    - needs_reboot | default(false)
+    msg:
+      - "Registration check for {{ inventory_hostname }}:"
+      - "  Registered: {{ system_is_registered | default(false) }}"
+  when: 
+    - inventory_hostname == satellite_fqdn
+    - not (is_satellite and satellite_already_installed | default(false))
 
-# Unregister from existing Satellite
-- name: Check current registration status
-  ansible.builtin.command: subscription-manager status
-  register: sub_status
+- name: Clean any existing registrations (Satellite only)
+  when: 
+    - inventory_hostname == satellite_fqdn
+    - not (is_satellite and satellite_already_installed | default(false))
+  block:
+    - name: Display registration cleanup target
+      debug:
+        msg: "Cleaning existing registrations on Satellite server: {{ satellite_fqdn }}"
+
+    - name: Unregister from existing subscription service
+      command: subscription-manager unregister
+      when: system_is_registered | default(false)
+      register: unregister_result
+      
+    - name: Clean subscription manager
+      command: subscription-manager clean
+      changed_when: true
+      
+    - name: Remove katello-ca-consumer packages
+      ansible.builtin.dnf:
+        name: "katello-ca-consumer*"
+        state: absent
+      failed_when: false
+
+    - name: Check if rhsm.conf exists
+      ansible.builtin.stat:
+        path: /etc/rhsm/rhsm.conf
+      register: rhsm_conf_stat
+
+    - name: Create timestamped backup of rhsm.conf
+      ansible.builtin.copy:
+        src: /etc/rhsm/rhsm.conf
+        dest: "/etc/rhsm/rhsm.conf.backup.{{ ansible_date_time.epoch }}"
+        remote_src: yes
+        mode: '0644'
+        owner: root
+        group: root
+      when: rhsm_conf_stat.stat.exists
+
+    # Reset RHSM configuration to Red Hat CDN defaults
+    - name: Configure RHSM server hostname to Red Hat CDN
+      ansible.builtin.ini_file:
+        path: /etc/rhsm/rhsm.conf
+        section: server
+        option: hostname
+        value: subscription.rhsm.redhat.com
+        backup: yes
+        mode: '0644'
+        owner: root
+        group: root
+
+    - name: Configure RHSM server prefix
+      ansible.builtin.ini_file:
+        path: /etc/rhsm/rhsm.conf
+        section: server
+        option: prefix
+        value: /subscription
+        mode: '0644'
+        owner: root
+        group: root
+
+    - name: Configure RHSM baseurl to Red Hat CDN
+      ansible.builtin.ini_file:
+        path: /etc/rhsm/rhsm.conf
+        section: rhsm
+        option: baseurl
+        value: https://cdn.redhat.com
+        mode: '0644'
+        owner: root
+        group: root
+
+    # CRITICAL FIX: Configure CA certificate for SSL validation
+    - name: Configure RHSM repo CA certificate path
+      ansible.builtin.ini_file:
+        path: /etc/rhsm/rhsm.conf
+        section: rhsm
+        option: repo_ca_cert
+        value: /etc/rhsm/ca/redhat-uep.pem
+        mode: '0644'
+        owner: root
+        group: root
+
+    # Configure proxy settings for CDN access
+    - name: Configure proxy hostname for CDN access
+      ansible.builtin.ini_file:
+        path: /etc/rhsm/rhsm.conf
+        section: server
+        option: proxy_hostname
+        value: "{{ server_proxy_hostname }}"
+        mode: '0644'
+        owner: root
+        group: root
+
+    - name: Configure proxy port for CDN access
+      ansible.builtin.ini_file:
+        path: /etc/rhsm/rhsm.conf
+        section: server
+        option: proxy_port
+        value: "80"
+        mode: '0644'
+        owner: root
+        group: root
+
+    - name: Remove proxy authentication if present
+      ansible.builtin.ini_file:
+        path: /etc/rhsm/rhsm.conf
+        section: server
+        option: "{{ item }}"
+        state: absent
+      loop:
+        - proxy_user
+        - proxy_password
+      failed_when: false
+
+    # Verify the complete configuration
+    - name: Verify RHSM configuration including proxy and CA cert
+      ansible.builtin.command: |
+        grep -E '^hostname|^prefix|^baseurl|^proxy_hostname|^proxy_port|^repo_ca_cert' /etc/rhsm/rhsm.conf | grep -v '^#'
+      register: rhsm_verify
+      changed_when: false
+      failed_when: false
+
+    - name: Display complete RHSM configuration
+      ansible.builtin.debug:
+        msg:
+          - "RHSM configured for Red Hat CDN:"
+          - "{{ rhsm_verify.stdout_lines | default(['Configuration set']) }}"
+
+    - name: Verify system is unregistered
+      command: subscription-manager identity
+      register: identity_check
+      failed_when: false
+      changed_when: false
+
+    - name: Confirm unregistration
+      assert:
+        that:
+          - "'system identity:' not in identity_check.stdout | lower"
+        fail_msg: "System still appears to be registered after cleanup!"
+        success_msg: "System successfully unregistered and ready for CDN registration"
+
+    - name: Registration cleanup summary for Satellite
+      debug:
+        msg:
+          - "Satellite registration cleanup completed:"
+          - "  - Previous registration: {{ 'Removed' if system_is_registered | default(false) else 'None found' }}"
+          - "  - RHSM configuration: Reset to Red Hat CDN"
+          - "  - Proxy configured: {{ server_proxy_hostname }}:80"
+          - "  - CA certificate: /etc/rhsm/ca/redhat-uep.pem"
+          - "  - repo_ca_cert: Configured in rhsm.conf"
+          - "  - SSL validation: Ready"
+          - "  - Ready for: CDN registration through proxy with SSL"
+
+- name: Capsule registration note
+  when: inventory_hostname != satellite_fqdn
+  debug:
+    msg:
+      - "Host {{ inventory_hostname }} is a Capsule"
+      - "Skipping registration cleanup - Capsules will register to Satellite later"
+      - "UEP certificate IS deployed in a prior step for future use if needed for whatever reason"
+
+# ============================================================================
+# PHASE 10: FINAL VALIDATION
+# ============================================================================
+
+- name: Validate storage mounts are accessible
+  command: "df -h {{ item.mount_point }}"
+  loop: "{{ effective_storage_config.volumes }}"
   changed_when: false
   failed_when: false
-
-- name: Unregister from existing Satellite if registered
-  ansible.builtin.command: subscription-manager unregister
-  when: "'Current' in sub_status.stdout"
-  register: unregister_result
-
-- name: Clean subscription manager
-  ansible.builtin.command: subscription-manager clean
-  when: unregister_result is changed
-
-- name: Remove any katello-ca-consumer packages
-  ansible.builtin.dnf:
-    name: "katello-ca-consumer*"
-    state: absent
-  failed_when: false
-
-# Hostname Configuration
-- name: Set hostname
-  ansible.builtin.hostname:
-    name: "{{ satellite_fqdn }}"
-  register: hostname_result
-
-- name: Ensure hostname in /etc/hosts
-  ansible.builtin.lineinfile:
-    path: /etc/hosts
-    regexp: "^{{ ansible_default_ipv4.address }}.*"
-    line: "{{ ansible_default_ipv4.address }} {{ satellite_fqdn }} {{ satellite_fqdn.split('.')[0] }}"
-    state: present
-  when: ansible_default_ipv4.address is defined
-
-# Final Validation
-- name: Validate storage mounts
-  ansible.builtin.command: "df -h {{ item.mount }}"
-  loop: "{{ satellite_storage_config.volumes }}"
-  changed_when: false
   register: mount_check
-  failed_when: mount_check.rc != 0
+
+- name: Verify all mounts succeeded
+  assert:
+    that: item.rc == 0
+    fail_msg: "Mount point {{ item.item.mount_point }} is not accessible"
+  loop: "{{ mount_check.results }}"
+  loop_control:
+    label: "{{ item.item.mount_point }}"
+
+# ============================================================================
+# PHASE 11: PREPARATION SUMMARY
+# ============================================================================
 
 - name: System preparation summary
   debug:
     msg:
-      - "Host preparation completed"
-      - "Storage: Configured"
+      - "================================================"
+      - "Host Preparation Completed Successfully!"
+      - "================================================"
+      - "Host Role: {{ host_role | upper }}"
+      - "Hostname: {{ inventory_hostname }}"
+      - "Storage: {{ effective_storage_config.volumes | length }} volumes configured"
+      - "Data Disk: {{ effective_storage_config.data_disk }}"
       - "SELinux: {{ selinux_mode }}"
-      - "Firewall: {{ 'Disabled' if not firewall_enabled else 'Enabled' }}"
-      - "Hostname: {{ satellite_fqdn }}"
       - "Packages: Installed and updated"
-      - "Registration: Cleaned"
+      - "Ready for: {{ is_satellite | ternary('Satellite installation', 'Capsule configuration') }}"
+      - "================================================"

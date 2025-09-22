@@ -1,43 +1,9 @@
 ---
 - name: Generate Capsule cert tarballs on Satellite hosts
-  when: inventory_hostname in satellite_fqdn
+  when: inventory_hostname == satellite_fqdn  # FIXED: == not in
   block:
-
-    - name: Loop through Capsule FQDNs
-      vars:
-        capsule_list: "{{ capsule_fqdns }}"
-      loop: "{{ capsule_list }}"
+    - name: Process each Capsule FQDN for tar generation
+      ansible.builtin.include_tasks: generate_single_capsule_tar.yml
+      loop: "{{ capsule_fqdns }}"
       loop_control:
         loop_var: capsule_fqdn
-      block:
-
-        - name: Derive capsule shortname and paths
-          set_fact:
-            capsule_shortname: "{{ capsule_fqdn.split('.')[0] }}"
-            capsule_custom_cert_path: "/root/capsule_cert/{{ capsule_shortname }}"
-            capsule_tar_path: "/root/capsule_cert/{{ capsule_shortname }}/{{ capsule_fqdn }}-certs.tar"
-
-        - name: Run capsule-certs-generate
-          command: >
-            capsule-certs-generate
-            --foreman-proxy-fqdn {{ capsule_fqdn }}
-            --certs-tar {{ capsule_tar_path }}
-            --server-cert {{ capsule_custom_cert_path }}/{{ capsule_fqdn }}.crt
-            --server-key {{ capsule_custom_cert_path }}/{{ capsule_fqdn }}.key
-            --server-ca-cert {{ capsule_custom_cert_path }}/{{ capsule_fqdn }}-chain.pem
-          register: cert_gen
-          changed_when: "'Generating' in cert_gen.stdout"
-
-        - name: Save capsule install instructions to file
-          copy:
-            content: "{{ cert_gen.stdout }}"
-            dest: "{{ capsule_custom_cert_path }}/{{ capsule_fqdn }}-install.txt"
-            mode: '0600'
-
-        - name: Debug capsule cert generation
-          debug:
-            msg:
-              - "Capsule certs generated for {{ capsule_fqdn }}"
-              - "Tar file: {{ capsule_tar_path }}"
-              - "Output:"
-              - "{{ cert_gen.stdout_lines }}"

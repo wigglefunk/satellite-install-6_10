@@ -1,0 +1,167 @@
+---
+# This file handles certificate distribution for a single Capsule
+# It runs ON the Capsule host itself (no loop needed here)
+# - name: Print the inventory_hostname {{ inventory_hostname }}
+#   ansible.builtin.debug:
+#     msg: System {{ inventory_hostname }}
+
+# - name: Derive capsule shortname and file paths
+#   set_fact:
+#     capsule_fqdn: "{{ inventory_hostname }}"
+#     capsule_shortname: "{{ inventory_hostname_short }}"
+#     local_temp_dir: "/tmp/capsule-certs-{{ capsule_fqdn }}-{{ ansible_date_time.epoch }}"
+
+- name: Derive capsule shortname and file paths
+  block:
+    - name: Set Capsule Hostnames
+      ansible.builtin.set_fact:
+        capsule_fqdn: "{{ inventory_hostname }}"
+        capsule_shortname: "{{ inventory_hostname_short }}"
+    - name: Set file path
+      ansible.builtin.set_fact:
+        local_temp_dir: "/tmp/capsule-certs-{{ capsule_fqdn }}-{{ ansible_date_time.epoch }}"
+
+# CHECK IF ALREADY DISTRIBUTED
+- name: Check if certificates already exist on Capsule
+  stat:
+    path: "/root/capsule_cert/{{ capsule_fqdn }}-certs.tar"
+  register: existing_tar
+
+- name: Check if instructions already exist on Capsule  
+  stat:
+    path: "/root/capsule_cert/{{ capsule_fqdn }}-install.txt"
+  register: existing_txt
+
+- name: Skip if already distributed
+  when: 
+    - existing_tar.stat.exists
+    - existing_txt.stat.exists
+    - not force_redistribute | default(false)
+  debug:
+    msg: "Certificates already distributed to {{ capsule_fqdn }}. Set force_redistribute=true to re-copy."
+
+# ONLY PROCEED IF NEEDED
+- name: Distribute certificates
+  when: not existing_tar.stat.exists or not existing_txt.stat.exists or force_redistribute | default(false)
+  block:
+    # VERIFY SOURCE EXISTS
+    - name: Verify cert tar exists on Satellite before fetching
+      stat:
+        path: "/root/capsule_cert/{{ capsule_shortname }}/{{ capsule_fqdn }}-certs.tar"
+      delegate_to: "{{ satellite_fqdn }}"
+      register: source_tar
+
+    - name: Verify instructions exist on Satellite before fetching
+      stat:
+        path: "/root/capsule_cert/{{ capsule_shortname }}/{{ capsule_fqdn }}-install.txt"
+      delegate_to: "{{ satellite_fqdn }}"
+      register: source_txt
+
+    - name: Fail if source files not found
+      fail:
+        msg: |
+          Certificate files not found on Satellite server!
+          Missing files for {{ capsule_fqdn }}:
+          - Tar: {{ '/root/capsule_cert/' + capsule_shortname + '/' + capsule_fqdn + '-certs.tar' }}
+          - Instructions: {{ '/root/capsule_cert/' + capsule_shortname + '/' + capsule_fqdn + '-install.txt' }}
+          
+          Please run the 'generate_capsule_tar' role first.
+      when: not source_tar.stat.exists or not source_txt.stat.exists
+
+    - name: Create local temp directory on Ansible controller
+      file:
+        path: "{{ local_temp_dir }}"
+        state: directory
+        mode: '0755'
+      delegate_to: localhost
+      become: no
+
+    # FETCH FROM SATELLITE
+    - name: Fetch capsule cert tar from Satellite to Ansible controller
+      ansible.builtin.fetch:
+        src: "/root/capsule_cert/{{ capsule_shortname }}/{{ capsule_fqdn }}-certs.tar"
+        dest: "{{ local_temp_dir }}/"
+        flat: yes
+      delegate_to: "{{ satellite_fqdn }}"
+      register: fetch_tar
+
+    - name: Fetch capsule install instructions from Satellite to Ansible controller
+      ansible.builtin.fetch:
+        src: "/root/capsule_cert/{{ capsule_shortname }}/{{ capsule_fqdn }}-install.txt"
+        dest: "{{ local_temp_dir }}/"
+        flat: yes
+      delegate_to: "{{ satellite_fqdn }}"
+      register: fetch_txt
+
+    # PREPARE DESTINATION
+    - name: Ensure capsule cert directory exists on Capsule
+      file:
+        path: "/root/capsule_cert"
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+
+    # COPY TO CAPSULE
+    - name: Copy capsule cert tar from Ansible controller to Capsule
+      ansible.builtin.copy:
+        src: "{{ local_temp_dir }}/{{ capsule_fqdn }}-certs.tar"
+        dest: "/root/capsule_cert/{{ capsule_fqdn }}-certs.tar"
+        owner: root
+        group: root
+        mode: '0644'
+        backup: yes  # Keep backup if file exists
+      register: tar_copy
+
+    - name: Copy install instructions from Ansible controller to Capsule
+      ansible.builtin.copy:
+        src: "{{ local_temp_dir }}/{{ capsule_fqdn }}-install.txt"
+        dest: "/root/capsule_cert/{{ capsule_fqdn }}-install.txt"
+        owner: root
+        group: root
+        mode: '0644'
+        backup: yes
+      register: txt_copy
+
+    # CLEANUP
+    - name: Clean up temp directory on Ansible controller
+      file:
+        path: "{{ local_temp_dir }}"
+        state: absent
+      delegate_to: localhost
+      become: no
+      when: 
+        - tar_copy is succeeded 
+        - txt_copy is succeeded
+        - cleanup_temp_files | default(true) | bool
+      register: cleanup_result
+
+    - name: Note about temp files
+      debug:
+        msg: "Temp files retained at {{ local_temp_dir }} for debugging. Set cleanup_temp_files=true to remove."
+      when: not cleanup_temp_files | default(true) | bool
+
+# FINAL VALIDATION
+- name: Validate cert tar exists and has content
+  stat:
+    path: "/root/capsule_cert/{{ capsule_fqdn }}-certs.tar"
+  register: tar_stat
+  failed_when: not tar_stat.stat.exists or tar_stat.stat.size == 0
+
+- name: Validate install instructions exist and have content
+  stat:
+    path: "/root/capsule_cert/{{ capsule_fqdn }}-install.txt"
+  register: txt_stat
+  failed_when: not txt_stat.stat.exists or txt_stat.stat.size == 0
+
+# REPORT SUCCESS
+- name: Report successful distribution
+  debug:
+    msg:
+      - "Successfully distributed Capsule certificates"
+      - "  Capsule: {{ capsule_fqdn }}"
+      - "  Tar file: {{ tar_stat.stat.size }}"
+      - "  Instructions: {{ txt_stat.stat.size }} bytes"
+      - "  Source: {{ satellite_fqdn }}"
+      - "  Destination: /root/capsule_cert/"
+      - "  Cleanup: {{ 'completed' if cleanup_result is defined else 'skipped' }}"

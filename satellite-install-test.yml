@@ -8,8 +8,8 @@
   become: true
   gather_facts: true
   vars_files:
-    - group_vars/all.yml  # Explicitly load variables for AAP
-  
+    - group_vars/test_env.yml  # Explicitly load variables for AAP
+
   # Module defaults for Satellite API operations
   module_defaults:
     group/redhat.satellite.satellite:
@@ -17,7 +17,7 @@
       username: "{{ satellite_setup_username }}"
       password: "{{ satellite_initial_admin_password }}"
       validate_certs: false
-      
+
   pre_tasks:
     - name: Determine RHEL version of current host
       set_fact:
@@ -26,7 +26,7 @@
     - name: Display host RHEL version
       debug:
         msg: "Host {{ inventory_hostname }} is running RHEL {{ rhel_major_version }}"
-    
+
     # Validate target system
     - name: Validate minimum requirements
       assert:
@@ -36,7 +36,7 @@
           - ansible_memtotal_mb >= 20480  # 20GB minimum
         fail_msg: "System does not meet minimum requirements for Satellite 6.17"
         success_msg: "System meets minimum requirements"
-    
+
     # DNS validation with retries
     - name: Validate DNS resolution
       command: "nslookup {{ satellite_fqdn }}"
@@ -47,14 +47,14 @@
       failed_when: false
       changed_when: false
       when: validate_dns | bool
-    
+
     - name: Fail if DNS validation failed after retries
       fail:
         msg: "DNS resolution failed for {{ satellite_fqdn }} after 3 attempts. Please fix DNS or set validate_dns to false"
       when:
         - validate_dns | bool
         - dns_check.rc != 0
-    
+
     # ========================================================================
     # Pre-check Satellite installation status
     # ========================================================================
@@ -72,7 +72,7 @@
           register: foreman_check
           failed_when: false
           changed_when: false
-        
+
         - name: Determine if Satellite is already installed
           set_fact:
             satellite_already_installed: >-
@@ -80,19 +80,19 @@
                 satellite_config_check.stat.exists and
                 (foreman_check.status.ActiveState | default('inactive')) == 'active'
               }}
-            
+
         - name: Report Satellite installation status
           debug:
             msg: >-
               Satellite is {{ 'ALREADY INSTALLED' if satellite_already_installed else 'NOT INSTALLED' }} on {{ inventory_hostname }}.
               {{ 'Role will be skipped.' if satellite_already_installed else 'Proceeding with installation.' }}
-    
+
     # Set default for non-Satellite hosts
     - name: Set default for non-Satellite hosts
       when: inventory_hostname != satellite_fqdn
       set_fact:
         satellite_already_installed: false
-        
+
     - name: Display installation plan
       debug:
         msg:
@@ -101,7 +101,7 @@
           - "Organization: {{ satellite_org }}"
           - "Location: {{ satellite_location }}"
           - "Satellite installation needed: {{ not satellite_already_installed }}"
-  
+
   roles:
     # Phase 1: Prepare the hosts (ALWAYS RUNS)
     - role: fcmcontrol-user-creation
@@ -111,7 +111,7 @@
         - prep
         - storage
         - packages
-    
+
     # Phase 2: Install Satellite (ONLY IF NOT INSTALLED)
     - role: install_satellite
       when: 
@@ -120,7 +120,7 @@
       tags:
         - install
         - satellite
-    
+
     # Phase 3: Prepare Capsule certs from zips on Satellite (ALWAYS RUNS)
     - role: prepare_capsule_certs
       when: inventory_hostname == satellite_fqdn
@@ -155,15 +155,15 @@
           - "Access URL: {{ satellite_server_url }}"
           - "Username: admin"
           - "Next step: {{ 'Configure content' if not satellite_already_installed else 'System ready' }}"
-    
+
     # Only show certificate results on Satellite
     - name: Display certificate generation results
-      when: 
+      when:
         - inventory_hostname == satellite_fqdn
         - capsule_fqdns | length > 0
       debug:
         msg: "Capsule certificates processed for: {{ capsule_fqdns | join(', ') }}"
-    
+
     # Only set stats on Satellite
     - name: Create installation summary
       when: inventory_hostname == satellite_fqdn
@@ -176,7 +176,7 @@
           installation_date: "{{ ansible_date_time.iso8601 }}"
           capsule_count: "{{ capsule_fqdns | length }}"
           satellite_was_already_installed: "{{ satellite_already_installed | string }}"
-    
+
     # Message for Capsules
     - name: Capsule preparation complete message
       when: inventory_hostname in capsule_fqdns

@@ -1,0 +1,164 @@
+---
+# This file generates certificate tarball for a single capsule
+# It is called by main.yml with capsule_fqdn as the loop variable
+# Supports both standard and load-balanced Capsule configurations
+
+- name: Derive capsule shortname and paths
+  set_fact:
+    capsule_shortname: "{{ capsule_fqdn.split('.')[0] }}"
+    capsule_custom_cert_path: "/root/capsule_cert/{{ capsule_fqdn.split('.')[0] }}"
+    capsule_tar_path: "/root/capsule_cert/{{ capsule_fqdn.split('.')[0] }}/{{ capsule_fqdn }}-certs.tar"
+
+# ADD IDEMPOTENCY CHECK
+- name: Check if certificate tarball already exists
+  stat:
+    path: "{{ capsule_tar_path }}"
+  register: existing_tar
+
+- name: Check if instructions file already exists
+  stat:
+    path: "{{ capsule_custom_cert_path }}/{{ capsule_fqdn }}-install.txt"
+  register: existing_instructions
+
+# SKIP IF ALREADY DONE (unless forced)
+- name: Skip if certificates already generated
+  debug:
+    msg: "Certificates already exist for {{ capsule_fqdn }}. Set force_regenerate=true to regenerate."
+  when: 
+    - existing_tar.stat.exists
+    - existing_instructions.stat.exists
+    - not force_regenerate | default(false)
+
+- name: Generate certificates
+  when: not existing_tar.stat.exists or not existing_instructions.stat.exists or force_regenerate | default(false)
+  block:
+    - name: Determine if this Capsule is load-balanced
+      set_fact:
+        is_loadbalanced: "{{ capsule_fqdn in loadbalanced_capsules }}"
+
+    - name: Display load balancer configuration for this Capsule
+      debug:
+        msg:
+          - "Capsule: {{ capsule_fqdn }}"
+          - "Load-balanced: {{ is_loadbalanced }}"
+          - "Load balancer FQDN: {{ capsule_loadbalancer_fqdn | default('Not configured') }}"
+      when: is_loadbalanced
+
+    # Certificate SAN reminder - keeping this as it's helpful
+    - name: Certificate SAN reminder for load-balanced Capsule
+      debug:
+        msg:
+          - "================================================================"
+          - "IMPORTANT: Load-Balanced Capsule Certificate Requirements"
+          - "================================================================"
+          - "Capsule {{ capsule_fqdn }} will be behind load balancer: {{ capsule_loadbalancer_fqdn }}"
+          - ""
+          - "Please ensure the custom SSL certificate includes:"
+          - "  1. CN or SAN: {{ capsule_fqdn }}"
+          - "  2. SAN: {{ capsule_loadbalancer_fqdn }}"
+          - ""
+          - "Without both entries, certificate validation will fail!"
+          - "================================================================"
+      when: is_loadbalanced
+
+    - name: Build base capsule-certs-generate command
+      set_fact:
+        cert_gen_cmd: >-
+          capsule-certs-generate
+          --foreman-proxy-fqdn {{ capsule_fqdn }}
+          --certs-tar {{ capsule_tar_path }}
+          --server-cert {{ capsule_custom_cert_path }}/{{ capsule_fqdn }}.crt
+          --server-key {{ capsule_custom_cert_path }}/{{ capsule_fqdn }}.key
+          --server-ca-cert {{ capsule_custom_cert_path }}/{{ capsule_fqdn }}-chain.pem
+
+    - name: Add load balancer cname parameter if this Capsule is load-balanced
+      set_fact:
+        cert_gen_cmd: "{{ cert_gen_cmd }} --foreman-proxy-cname {{ capsule_loadbalancer_fqdn }}"
+      when: 
+        - is_loadbalanced
+        - capsule_loadbalancer_fqdn is defined
+        - capsule_loadbalancer_fqdn | length > 0
+
+    - name: Display the command that will be executed
+      debug:
+        msg: "Command to execute: {{ cert_gen_cmd }}"
+        verbosity: 1
+
+    # ADD BETTER ERROR HANDLING
+    - name: Run capsule-certs-generate
+      command: "{{ cert_gen_cmd }}"
+      register: cert_gen
+      async: 600  # 10 minute timeout
+      poll: 15    # Check every 15 seconds
+      environment:
+        LANG: en_US.UTF-8
+        LC_ALL: en_US.UTF-8
+
+    - name: Verify command succeeded
+      assert:
+        that:
+          - cert_gen.rc == 0
+          - cert_gen.stdout is defined
+        fail_msg: "Failed to generate certificates for {{ capsule_fqdn }}"
+
+    # Rest of the instructions generation...
+    - name: Build additional instructions for load-balanced Capsule
+      set_fact:
+        loadbalancer_instructions: |
+          
+          ================================================================
+          LOAD BALANCER CONFIGURATION REQUIRED
+          ================================================================
+          This Capsule is configured for load balancing.
+          Load Balancer FQDN: {{ capsule_loadbalancer_fqdn }}
+          
+          IMPORTANT: When running the satellite-installer command on the Capsule,
+          you MUST append these additional options:
+          
+          --certs-cname "{{ capsule_loadbalancer_fqdn }}" \
+          --enable-foreman-proxy-plugin-remote-execution-script
+          
+          These options are REQUIRED for load-balanced Capsules to function correctly.
+          ================================================================
+      when: is_loadbalanced
+
+    - name: Build standard instructions for non-load-balanced Capsule
+      set_fact:
+        loadbalancer_instructions: |
+          
+          ================================================================
+          STANDARD CAPSULE CONFIGURATION
+          ================================================================
+          This is a standard (non-load-balanced) Capsule configuration.
+          Run the satellite-installer command exactly as shown above.
+          ================================================================
+      when: not is_loadbalanced
+
+    - name: Combine cert generation output with additional instructions
+      set_fact:
+        complete_instructions: "{{ cert_gen.stdout }}\n{{ loadbalancer_instructions }}"
+
+    - name: Save capsule install instructions to file
+      copy:
+        content: "{{ complete_instructions }}"
+        dest: "{{ capsule_custom_cert_path }}/{{ capsule_fqdn }}-install.txt"
+        mode: '0644'
+        owner: root
+        group: root
+        backup: yes  # Keep a backup of previous instructions
+
+    # VERIFY OUTPUT FILES
+    - name: Verify tarball was created
+      stat:
+        path: "{{ capsule_tar_path }}"
+      register: final_tar
+      failed_when: not final_tar.stat.exists
+
+    - name: Debug capsule cert generation summary
+      debug:
+        msg:
+          - "Capsule certs generated for {{ capsule_fqdn }}"
+          - "Configuration type: {{ is_loadbalanced | ternary('Load-balanced', 'Standard') }}"
+          - "Tar file: {{ capsule_tar_path }} ({{ final_tar.stat.size }} bytes)"
+          - "Instructions saved: {{ capsule_custom_cert_path }}/{{ capsule_fqdn }}-install.txt"
+          - "Next step: Certificate files will be distributed to Capsule"

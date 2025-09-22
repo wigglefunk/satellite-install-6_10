@@ -1,0 +1,88 @@
+---
+# This file processes certificates for a single capsule
+# It is called by main.yml with capsule_fqdn as the loop variable
+
+- name: Derive capsule shortname and cert path
+  set_fact:
+    capsule_shortname: "{{ capsule_fqdn.split('.')[0] }}"
+    capsule_custom_cert_path: "/root/capsule_cert/{{ capsule_fqdn.split('.')[0] }}"
+
+- name: Ensure cert directory exists
+  file:
+    path: "{{ capsule_custom_cert_path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Copy cert ZIP file from GitLab repo to Satellite
+  copy:
+    src: "{{ capsule_shortname }}/{{ capsule_fqdn }}.zip"
+    dest: "{{ capsule_custom_cert_path }}/{{ capsule_fqdn }}.zip"
+    mode: "0644"
+    owner: root
+    group: root
+  register: zip_copy
+
+- name: Unzip cert files on Satellite host
+  command: >
+    unzip -o {{ capsule_fqdn }}.zip "{{ capsule_fqdn }}*"
+  args:
+    chdir: "{{ capsule_custom_cert_path }}"
+  register: unzip_result
+  changed_when: "'inflating:' in unzip_result.stdout"
+
+# - name: Extract certificate files
+#   ansible.builtin.unarchive:
+#     src: "{{ capsule_custom_cert_path }}/{{ capsule_fqdn }}.zip"
+#     dest: "{{ capsule_custom_cert_path }}"
+#     remote_src: yes
+#     owner: root
+#     group: root
+#     list_files: yes
+#   register: unzip_result
+
+- name: Check if key has already been processed
+  stat:
+    path: "{{ capsule_custom_cert_path }}/{{ capsule_fqdn }}.key.old"
+  register: key_processed
+
+- name: Rename original key file
+  command: >
+    cp {{ capsule_fqdn }}.key {{ capsule_fqdn }}.key.old
+  args:
+    chdir: "{{ capsule_custom_cert_path }}"
+    creates: "{{ capsule_custom_cert_path }}/{{ capsule_fqdn }}.key.old"
+  when: not key_processed.stat.exists
+
+- name: Rewrite key with openssl (remove password if present)
+  command: >
+    openssl rsa 
+    -passin "pass:{{ cert_pass }}" 
+    -in {{ capsule_fqdn }}.key.old 
+    -out {{ capsule_fqdn }}.key
+  args:
+    chdir: "{{ capsule_custom_cert_path }}"
+  when: not key_processed.stat.exists
+  register: key_rewrite
+
+- name: Validate certs with katello-certs-check
+  shell: >
+    katello-certs-check
+    -c {{ capsule_custom_cert_path }}/{{ capsule_fqdn }}.crt
+    -k {{ capsule_custom_cert_path }}/{{ capsule_fqdn }}.key
+    -b {{ capsule_custom_cert_path }}/{{ capsule_fqdn }}-chain.pem
+  args:
+    chdir: "{{ capsule_custom_cert_path }}"
+  register: cert_check
+  changed_when: false
+  failed_when: false
+
+- name: Debug summary of Capsule cert prep
+  debug:
+    msg:
+      - "Capsule FQDN: {{ capsule_fqdn }}"
+      - "Capsule shortname: {{ capsule_shortname }}"
+      - "Cert ZIP location: files/{{ capsule_shortname }}/{{ capsule_fqdn }}.zip"
+      - "Certs extracted to: {{ capsule_custom_cert_path }}"
+      - "Key processing: {{ 'completed' if key_rewrite is changed else 'already done' }}"
